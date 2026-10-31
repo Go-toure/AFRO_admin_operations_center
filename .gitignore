@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+secrets.env
+*.xlsx
+*.csv
+!tests/*.csv
+/ops_work/
+/logs/
+rsconnect/
+.DS_Store
