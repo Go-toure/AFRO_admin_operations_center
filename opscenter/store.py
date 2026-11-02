@@ -463,6 +463,13 @@ class Store:
         if cur.get("token") == token:
             self.delete("lock.json")
 
+    def break_lock(self):
+        """Remove the lock whoever holds it (the job is gone: the app restarted or crashed). Returns the lock that was removed."""
+        cur = self.get_json("lock.json")
+        if cur:
+            self.delete("lock.json")
+        return cur
+
     def lock_info(self):
         cur = self.get_json("lock.json")
         if not cur:

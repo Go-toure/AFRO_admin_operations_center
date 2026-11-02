@@ -189,6 +189,42 @@ def server(input, output, session):
             ui.notification_show(str(e), type="warning")
 
     @reactive.effect
+    @reactive.event(input.j_unlock)
+    def _unlock_ask():
+        if not is_operator() or JM.busy():
+            return
+        lk = get_store().lock_info()
+        if not lk:
+            ui.notification_show("There is no lock any more.", duration=4)
+            ov_task()
+            return
+        ui.modal_show(ui.modal(
+            ui.p("%s started '%s' at %s and the folder is still locked." % (lk.get("who"), lk.get("what"), lk.get("since", "")[:16].replace("T", " "))),
+            ui.p("Release the lock only if that job is not running any more (the app was restarted, or the job crashed). If someone is "
+                 "really running it, for example from their PC, releasing the lock lets two jobs write to the folder at the same time."),
+            title="Release the lock?", easy_close=True,
+            footer=ui.TagList(ui.modal_button("Cancel"), ui.input_action_button("j_unlock_yes", "Release the lock", class_="btn-danger"))))
+
+    @reactive.effect
+    @reactive.event(input.j_unlock_yes)
+    def _unlock_do():
+        ui.modal_remove()
+        u = user()
+        if not u or not is_operator() or JM.busy():
+            return
+        try:
+            st = get_store()
+            old = st.break_lock()
+            if old:
+                st.log_activity(u["name"], "Release the lock", "ok",
+                                "lock held by %s for '%s' since %s" % (old.get("who"), old.get("what"), old.get("since", "")))
+        except StoreError as e:
+            ui.notification_show("Could not release the lock: %s" % e, type="error")
+            return
+        ui.notification_show("The lock is released.", duration=5)
+        ov_task()
+
+    @reactive.effect
     @reactive.event(input.j_backup)
     def _j1():
         start("Back up the live file", pipelines.p_backup, operator=False)
@@ -334,7 +370,9 @@ def server(input, output, session):
             tile("Backups kept", str(len(d["backups"])), "newest: version %s" % d["backups"][0]["version"] if d["backups"] else "run a backup"),
         ]
         lock = d.get("lock")
-        banner = ui.div(pill("Busy: %s is running '%s' since %s" % (lock.get("who"), lock.get("what"), lock.get("since", "")[:16]), "wait")) if lock else ui.div()
+        banner = ui.div(pill("Busy: %s is running '%s' since %s" % (lock.get("who"), lock.get("what"), lock.get("since", "")[:16]), "wait"),
+                        ui.input_action_button("j_unlock", "Release the lock", class_="btn-sm btn-outline-danger", style="margin-left:10px;")
+                        if is_operator() and not JM.busy() else None) if lock else ui.div()
         return ui.div(
             ui.layout_columns(*tiles, col_widths=[3, 3, 3, 3]),
             ui.div(ui.p(ui.strong("Next: "), d["next"]), banner, style="margin:14px 0 6px;"),
