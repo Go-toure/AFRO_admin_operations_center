@@ -115,13 +115,13 @@ button "Clean up now" in the Cycle tab does it at once):
 | Earlier live dictionaries | newest 3 | `OPS_KEEP_DICT_COPIES` |
 | Builds (`runs/vNN`) | the big files (above 250 KB) of the newest 2 builds and of the last published one; older builds keep only their manifest, logs, check report and small dictionary | `OPS_KEEP_RUNS`, `OPS_RUN_BIG_KB` |
 | Inspect and compare results | newest 3 of each | `OPS_KEEP_RESULTS` |
-| Version history of every file in the folder | current version only: removed at every overwrite, and the whole folder is swept once a day (`OPS_SWEEP_HOURS`, default 24) | |
-| Recycle bin | deleted files are removed for good (permanent delete); removed versions are emptied from the site recycle bin | |
+| Version history of every file in the folder | none: a file the app rewrites is replaced (new copy uploaded, old one deleted for good, new one renamed), so no version is created and nothing reaches the recycle bin. History that already exists is removed by a sweep of the whole folder once a day (`OPS_SWEEP_HOURS`, default 24): small files (up to 5 MB) are replaced the same way, bigger ones have their old versions deleted | |
+| Recycle bin | deleted files are removed for good (permanent delete); the few versions that still have to be deleted (files above 5 MB, or if SharePoint refuses the permanent delete for the app) pass through the site recycle bin and are emptied from it at the end of the job | |
 
 The PC keeps everything (`SharePoint_version_backup` and `Admin_data_coadministration/workspace/runs`), so nothing is lost for good.
 The Overview shows the size of the folder and the result of the last full clean-up. The live data file and dictionary are handled by the
-publish step (it deletes their version history and empties the deleted copies from the recycle bin). If SharePoint refuses to empty the
-recycle bin for this app (it needs the beta recycle bin permission), the job log says so; then empty it by hand once in a while
+publish step (it deletes their version history and empties the deleted copies from the recycle bin). If SharePoint refuses the permanent delete or the emptying of the
+recycle bin for this app, the job log says so; then empty it by hand once in a while
 (Site contents > Recycle bin > Second-stage), or ask IT.
 
 ## Day to day

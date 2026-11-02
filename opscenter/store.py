@@ -16,6 +16,7 @@ import requests
 from . import config
 
 CHUNK = 320 * 1024 * 32          # 10 MiB, a multiple of 320 KiB as Graph requires
+SWEEP_REPLACE_MAX = 5 * 1024 * 1024        # files up to this size are replaced by a fresh copy to drop their history
 SIMPLE_MAX = 4 * 1024 * 1024     # larger files go through an upload session
 
 
@@ -94,6 +95,7 @@ class Store:
         if "folder" not in item and item.get("file"):
             raise StoreError("OPS_STORE_SHARE_URL points to a file, not to a folder.")
         self._perm_ok = True               # permanentDelete accepted for this app (switched off at the first refusal)
+        self._perm_probed = False
         self.site_id = (item.get("parentReference") or {}).get("siteId")
         self.cleaned = set()               # names of what the clean-up removed in this job (to find them in the recycle bin)
         self.versions_removed = 0
@@ -179,9 +181,77 @@ class Store:
 
     # -- writing
     def put(self, path, data):
-        """Write bytes (or a local file path) to a path in the folder; parent folders are created."""
+        """Write bytes (or a local file path) to a path in the folder; parent folders are created.
+
+        A file that already exists is REPLACED, not overwritten: the new copy is uploaded under a temporary name, the old file is
+        deleted for good and the new one takes its name. An overwrite would keep the old content as a version (and a removed
+        version only moves to the site recycle bin); a replacement leaves no version and nothing in the recycle bin. If SharePoint
+        does not allow the permanent delete for this app, the file is overwritten and its old versions are removed afterwards."""
         if isinstance(data, (str, Path)):
             data = Path(data).read_bytes()
+        if path.strip("/") != "lock.json" and self._can_replace():
+            old = self.g.request("GET", self._at(path))
+            if old.status_code == 200 and old.json().get("id") and "folder" not in old.json():
+                if self._replace(path, data, old.json()["id"]):
+                    return
+        self._write(path, data)
+
+    def _can_replace(self):
+        """Does SharePoint accept the permanent delete from this app? Tried once with a tiny file."""
+        if self._perm_ok is False:
+            return False
+        if self._perm_probed:
+            return True
+        self._perm_probed = True
+        probe = "_probe_%d.tmp" % int(time.time())
+        try:
+            self._write(probe, b"x", drop=False)
+            g = self.g.request("GET", self._at(probe))
+            iid = g.json().get("id") if g.status_code == 200 else None
+            d = self.g.request("POST", f"{config.GRAPH}/drives/{self.drive}/items/{iid}/permanentDelete") if iid else None
+            if d is not None and d.status_code in (200, 204):
+                return True
+            self._perm_ok = False
+            self.cleaned.add(probe.lower())
+            self.g.request("DELETE", self._at(probe))
+        except StoreError:
+            self._perm_ok = False
+        return self._perm_ok
+
+    def _rename(self, item_id, new_name):
+        r = self.g.request("PATCH", f"{config.GRAPH}/drives/{self.drive}/items/{item_id}", json={"name": new_name})
+        return r.status_code in (200, 201)
+
+    def _replace(self, path, data, old_id):
+        """Upload under a temporary name, move the old file aside, give the new one the name, delete the old one for good.
+        Returns False (and changes nothing) when a step fails before the old file is gone."""
+        name = path.strip("/").split("/")[-1]
+        tmp, aside = path + ".incoming", path + ".old"
+        try:
+            self._write(tmp, data, drop=False)
+        except StoreError:
+            return False
+        g = self.g.request("GET", self._at(tmp))
+        new_id = g.json().get("id") if g.status_code == 200 else None
+        if not new_id:
+            return False
+        if self.exists(aside):                                  # left over from an interrupted replacement
+            self.delete(aside)
+        if not self._rename(old_id, name + ".old"):
+            self.delete(tmp, permanent=False)
+            return False
+        if not self._rename(new_id, name):
+            self._rename(old_id, name)                            # put everything back
+            self.delete(tmp, permanent=False)
+            return False
+        d = self.g.request("POST", f"{config.GRAPH}/drives/{self.drive}/items/{old_id}/permanentDelete")
+        if d.status_code not in (200, 204):                       # new file is in place; the old one goes the normal way
+            self._perm_ok = False
+            self.g.request("DELETE", f"{config.GRAPH}/drives/{self.drive}/items/{old_id}")
+            self.cleaned.add(name.lower() + ".old")
+        return True
+
+    def _write(self, path, data, drop=True):
         item_id = None
         if len(data) <= SIMPLE_MAX:
             r = self.g.request("PUT", self._at(path) + "/content", ok=(200, 201), data=data,
@@ -192,7 +262,8 @@ class Store:
                 item_id = r.json().get("id")
             except ValueError:
                 pass
-            self._drop_versions(item_id, len(data), path)
+            if drop:
+                self._drop_versions(item_id, len(data), path)
             return
         r = self.g.request("POST", self._at(path) + "/createUploadSession",
                            json={"item": {"@microsoft.graph.conflictBehavior": "replace"}})
@@ -231,7 +302,8 @@ class Store:
                     start = int(str(rng[0]).split("-")[0])
             except Exception:
                 pass
-        self._drop_versions(item_id, size, path)
+        if drop:
+            self._drop_versions(item_id, size, path)
 
     def _drop_versions(self, item_id, size, path=""):
         """SharePoint keeps every overwrite of a file as a full extra copy that counts against the storage. An overwritten file
@@ -260,8 +332,17 @@ class Store:
                 self.versions_bytes += int(v.get("size") or 0)
         return n
 
+    def _versions(self, item_id):
+        r = self.g.request("GET", f"{config.GRAPH}/drives/{self.drive}/items/{item_id}/versions")
+        if r.status_code != 200:
+            return []
+        return sorted(r.json().get("value", []), key=lambda v: v.get("lastModifiedDateTime", ""), reverse=True)
+
     def sweep_versions(self, prefix=""):
-        """Delete the old versions of every file below a folder (the current version stays). Returns (versions removed, bytes)."""
+        """Get rid of the old versions of every file below a folder (the current version stays). A file of up to
+        SWEEP_REPLACE_MAX bytes is replaced by a fresh copy (no version, nothing in the recycle bin); a bigger one has its old
+        versions deleted (they pass through the recycle bin, see empty_recycle_bin). Leftovers of an interrupted replacement
+        are deleted. Returns (versions removed, bytes)."""
         before_n, before_b = self.versions_removed, self.versions_bytes
 
         def rec(p):
@@ -269,12 +350,28 @@ class Store:
                 child = (p + "/" + c["name"]) if p else c["name"]
                 if c["is_dir"]:
                     rec(child)
-                elif c.get("id") and child != "lock.json":
-                    try:
-                        if self.purge_versions(c["id"]):
-                            self.cleaned.add(c["name"].lower())
-                    except StoreError:
-                        pass
+                    continue
+                nm = c["name"]
+                if nm.endswith((".incoming", ".old")) or nm.startswith("_probe_"):
+                    self.delete(child)
+                    continue
+                if not c.get("id") or child == "lock.json":
+                    continue
+                vs = self._versions(c["id"])
+                if len(vs) <= 1:
+                    continue
+                top = child.split("/")[0]
+                try:
+                    if c["size"] <= SWEEP_REPLACE_MAX and top not in ("inspect", "compare") and self._can_replace():
+                        data = self.get(child)
+                        if data is not None and self._replace(child, data, c["id"]):
+                            self.versions_removed += len(vs) - 1
+                            self.versions_bytes += sum(int(v.get("size") or 0) for v in vs[1:])
+                            continue
+                    if self.purge_versions(c["id"]):
+                        self.cleaned.add(nm.lower())
+                except StoreError:
+                    pass
         rec(prefix.strip("/"))
         return self.versions_removed - before_n, self.versions_bytes - before_b
 

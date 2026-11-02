@@ -23,6 +23,7 @@ NAMES = {"ITEM1": "AFRO_admin_data.xlsx", "ITEM2": "AFRO_admin_data_dictionary.x
 BASE = "http://127.0.0.1:%d" % PORT
 STORE.mkdir(parents=True, exist_ok=True)
 FV = {}          # versions of store files: {item id: [version dicts]}
+IDPATH = {}      # an item id that was renamed keeps pointing at the item (as real item ids do): {id: current relative path}
 state = {"etag": {"ITEM1": "e1", "ITEM2": "d1"}, "upload": {}, "log": [],
          "versions": {"ITEM1": [{"id": "3.0", "lastModifiedDateTime": "2026-10-28T14:08:00Z", "size": 11000000},
                                 {"id": "2.0", "lastModifiedDateTime": "2026-10-28T10:30:00Z", "size": 10900000}],
@@ -86,6 +87,36 @@ class H(BaseHTTPRequestHandler):
         d["folder" if p.is_dir() else "file"] = {}
         return d
 
+    def add_version(self, key, existed):
+        """A SharePoint overwrite keeps the old content as a version; a new file has one version only."""
+        if not existed:
+            IDPATH.pop(key, None)            # a new file at this path gets a fresh id
+        n = len(FV.get(key, [])) if existed else 0
+        FV[key] = [{"id": "%d.0" % (n + 2), "lastModifiedDateTime": "2026-10-30T12:00:%02dZ" % min(59, n + 1), "size": 1000}] + (FV.get(key, []) if existed else [])
+        if existed and n == 0:
+            FV[key].append({"id": "1.0", "lastModifiedDateTime": "2026-10-29T12:00:00Z", "size": 1000})
+
+    def do_PATCH(self):
+        p, b = self.path, self.body()
+        if p.startswith("/drives/DRIVE1/items/F:"):
+            rel = unquote(p[len("/drives/DRIVE1/items/F:"):])
+            iid0 = "F:" + rel
+            rel = IDPATH.get(iid0, rel)
+            src = STORE / rel
+            new = json.loads(b)["name"]
+            dst = src.parent / new
+            if not src.exists():
+                return self.send(404, {"error": "nf"})
+            if dst.exists():
+                return self.send(409, {"error": "nameAlreadyExists"})
+            src.rename(dst)
+            nk = "F:" + dst.relative_to(STORE).as_posix()
+            if "F:" + rel in FV:
+                FV[nk] = FV.pop("F:" + rel)
+            IDPATH[iid0] = dst.relative_to(STORE).as_posix()
+            return self.send(200, {"id": iid0, "name": new})
+        self.send(404)
+
     def do_POST(self):
         p, b = self.path, self.body()
         if p.endswith("/token"):
@@ -94,6 +125,7 @@ class H(BaseHTTPRequestHandler):
             if state.get("noperm"):
                 return self.send(403, {"error": "denied"})
             rel = unquote(p[len("/drives/DRIVE1/items/F:"):-len("/permanentDelete")])
+            rel = IDPATH.pop("F:" + rel, rel)
             t = STORE / rel
             if t.is_file():
                 t.unlink()
@@ -130,8 +162,10 @@ class H(BaseHTTPRequestHandler):
             if len(state["upload"][rel]) >= total:
                 t = STORE / rel
                 t.parent.mkdir(parents=True, exist_ok=True)
+                existed = t.exists()
                 t.write_bytes(bytes(state["upload"][rel]))
-                return self.send(201, {"name": t.name})
+                self.add_version("F:" + rel, existed)
+                return self.send(201, {"name": t.name, "id": "F:" + rel})
             return self.send(202, {})
         if p.startswith("/up/"):
             k = p.rsplit("/", 1)[1]
@@ -147,8 +181,9 @@ class H(BaseHTTPRequestHandler):
         if sp and sp[1] == "content":
             t = STORE / sp[0]
             t.parent.mkdir(parents=True, exist_ok=True)
+            existed = t.exists()
             t.write_bytes(b)
-            FV.setdefault("F:" + sp[0], [{"id": "2.0", "lastModifiedDateTime": "2026-10-30T12:00:00Z"}, {"id": "1.0", "lastModifiedDateTime": "2026-10-29T12:00:00Z"}])
+            self.add_version("F:" + sp[0], existed)
             return self.send(201, {"name": t.name, "id": "F:" + sp[0]})
         self.send(404)
 
@@ -164,7 +199,8 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, file_item("ITEM1"))
         if p.startswith("/__ctl"):
             q = parse_qs(urlparse(p).query)
-            state["noperm"] = q.get("noperm", ["0"])[0] == "1"
+            if "noperm" in q:
+                state["noperm"] = q["noperm"][0] == "1"
             if q.get("addver"):
                 FV["F:" + q["addver"][0]] = [{"id": "%d.0" % i, "lastModifiedDateTime": "2026-10-2%dT10:00:00Z" % i, "size": 5000} for i in (4, 3, 2, 1)]
             return self.send(200, {"perm": state.get("perm", 0), "store_bin": len([x for x in state["bin"] if x.get("store")])})
