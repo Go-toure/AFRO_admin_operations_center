@@ -44,6 +44,8 @@ or two servers). Operators can build and publish; viewers can only look and down
 
 ## Storage on SharePoint
 
+* **The lookup is refreshed every time** from the GPEI API (token in `GPEI_API_TOKEN`) at the start of each build and inspect, or with the
+  Refresh the lookup button; the new lookup is saved in the folder and the build records which one it used.
 * **Backups of the live file: only the newest 3** are kept in the folder (`OPS_KEEP_BACKUPS`, default 3). Older ones
   are removed after every job. The PC keeps its own complete archive in `SharePoint_version_backup`. The builder uses
   the kept backups as the reference for its repairs, so a build in the app sees 3 backups and a build on the PC sees all of

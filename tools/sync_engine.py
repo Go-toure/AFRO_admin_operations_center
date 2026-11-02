@@ -20,7 +20,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
 ENGINE = HERE / "engine"
-ADMIN_FILES = ("admin.py", "add_coadmin_columns.py", "publish_admin_data.py")
+ADMIN_FILES = ("admin.py", "add_coadmin_columns.py", "publish_admin_data.py", "refresh_lookup.py")
 
 
 def patch_backup_tool(text):
@@ -62,6 +62,8 @@ def check_public():
     bad = 0
     for p in sorted(HERE.rglob("*")):
         if not p.is_file() or ".git" in p.parts or "__pycache__" in p.parts or p.suffix in (".pyc", ".xlsx", ".png"):
+            continue
+        if p.relative_to(HERE).parts[0] == "ops_work":      # private local run folder, ignored by git (users, logs, run files)
             continue
         if p == Path(__file__).resolve():
             continue

@@ -135,7 +135,10 @@ def step_build(ctx):
     ensure_inputs(ctx)
     ctx.emit("Reading the backups of the live file (the reference for the repairs) ...")
     ctx.ws.pull_snapshots()
-    admin_ok(ctx, "build")
+    try:
+        admin_ok(ctx, "build")          # refreshes the lookup from the GPEI API first (see engine/refresh_lookup.py)
+    finally:
+        ctx.ws.push_lookup(ctx.emit)    # a refreshed lookup is kept even when the build stops
 
 
 def step_check(ctx):
@@ -218,6 +221,17 @@ def p_all(ctx):
     admin_ok(ctx, "publish")
 
 
+@operator_only
+def p_lookup(ctx):
+    """Refresh the lookup from the GPEI API now (build and inspect do it anyway at their start)."""
+    ctx.ws.pull_light()
+    ensure_inputs(ctx)
+    try:
+        admin_ok(ctx, "lookup")
+    finally:
+        ctx.ws.push_lookup(ctx.emit)
+
+
 def ensure_source(ctx, spec):
     """Make the file behind 'live' / 'vNN' / 'bN' available locally."""
     spec = (spec or "live").strip()
@@ -245,7 +259,10 @@ def make_inspect(source, country):
         args = ["inspect", "--source", source]
         if country:
             args += ["--country", country]
-        admin_ok(ctx, *args)
+        try:
+            admin_ok(ctx, *args)        # refreshes the lookup from the GPEI API first
+        finally:
+            ctx.ws.push_lookup(ctx.emit)
     return p
 
 

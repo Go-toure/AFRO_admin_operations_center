@@ -199,6 +199,11 @@ def server(input, output, session):
         start("Build the next version", pipelines.p_build)
 
     @reactive.effect
+    @reactive.event(input.j_lookup)
+    def _jl():
+        start("Refresh the lookup", pipelines.p_lookup)
+
+    @reactive.effect
     @reactive.event(input.j_check)
     def _j3():
         start("Check the newest build", pipelines.p_check)
@@ -373,6 +378,8 @@ def server(input, output, session):
                     card("4  Store the check_dp values", "Writes the check_dp values into the file (no Excel needed).", "j_values", "Store values"),
                     card("5  Publish", "Replaces the data file and then the data dictionary on SharePoint, keeps no version history there, backs up again. Stops if the live file changed since the build.", "j_publish", "Publish data + dictionary", True),
                     card("Dictionary only", "Pushes just the data dictionary of the last published build.", "j_dict", "Push the dictionary"),
+                    card("Refresh the lookup", "Reads the campaign rounds from the GPEI API and updates the lookup in the SharePoint folder. This is also done "
+                         "automatically at the start of every build and every inspect.", "j_lookup", "Refresh the lookup"),
                     card("All steps", "Build, check, store values and publish in one go. Stops at the first problem.", "j_all", "Run the whole cycle", True),
                 ),
                 col_widths=[6, 6]),

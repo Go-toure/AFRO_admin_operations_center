@@ -23,6 +23,16 @@ def item_info(g, url):
         return {"ok": False, "error": str(e)}
 
 
+def _lookup_text(lk):
+    """'474 rounds, refreshed' / 'unchanged' / 'NOT refreshed' for the run table."""
+    if not lk:
+        return ""
+    st, rows = lk.get("status"), lk.get("rows")
+    word = {"updated": "refreshed", "unchanged": "up to date", "failed": "NOT refreshed", "off": "not refreshed (off)",
+            "skipped": "not refreshed (skipped)"}.get(st, st or "")
+    return ("%s rounds, %s" % (rows, word)) if rows else word
+
+
 def load(store, ws):
     """Refresh the small files from the SharePoint folder and collect everything for the Overview."""
     ws.prepare()
@@ -45,7 +55,8 @@ def load(store, ws):
         pub = m.get("published") or {}
         runs.append({"version": "v%d" % n, "state": run_state(m), "built": (m.get("created") or "")[:16],
                      "records": m.get("build", {}).get("rows_out") or "", "errors": m.get("build", {}).get("errors") or "",
-                     "published": (pub.get("at") or "")[:16], "dictionary": pub.get("dictionary") or ""})
+                     "published": (pub.get("at") or "")[:16], "dictionary": pub.get("dictionary") or "",
+                     "lookup": _lookup_text(m.get("lookup"))})
     out["runs"] = runs
     out["lock"] = store.lock_info()
     out["activity"] = list(reversed((store.get_json("activity.json", []) or [])[-60:]))

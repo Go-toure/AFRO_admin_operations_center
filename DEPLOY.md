@@ -87,6 +87,7 @@ Sign in at connect.posit.cloud, **Publish**, choose **Shiny**, pick the reposito
 | `OPS_DICT_SHARE_URL` | link of `AFRO_admin_data_dictionary.xlsx` (step 2) |
 | `OPS_USERS` | the JSON of step 4 |
 | `OPS_MIN_BUILD_GB` (optional) | free memory needed to start a build, default 5 |
+| `GPEI_API_TOKEN` | the same token as `GPEI_API_TOKEN` in the scope folder's `config/secrets.env` (poliogo.afro.who.int/dashboard/api/apitoken). With it, the lookup is refreshed from the GPEI API at the start of every build and inspect; without it the app uses the lookup that is in the folder and says so in the job log |
 | `OPS_KEEP_BACKUPS` (optional) | backups of the live file kept on SharePoint, default 3 |
 
 After the first deployment open the content settings and set the compute memory (8 GB or more to build) and, if your
@@ -96,12 +97,19 @@ plan allows, who may view the app. Then publish again if asked.
 
 1. Sign in; the Overview must show the live file, the dictionary, the last published version and the backups.
 2. Cycle > **Back up now**: expect "unchanged" (the seed already holds the newest file).
-3. Quality & compare > **Inspect** the live file: it prints the hygiene checks and the lookup agreement.
-4. Run a full cycle from the app **and** `python admin.py build` on the PC from the same live file, then
+3. Cycle > **Refresh the lookup**: the log must say "Lookup is up to date" or "refreshed from the GPEI API" with the number of rounds (474 at the time of writing). If it says NOT refreshed, check `GPEI_API_TOKEN`.
+4. Quality & compare > **Inspect** the live file: it prints the hygiene checks and the lookup agreement.
+5. Run a full cycle from the app **and** `python admin.py build` on the PC from the same live file, then
    `python admin.py compare v25 <the app's build>`: the two builds must agree (download the app's file from Files).
    Publish from the app only after that.
 
 ## Day to day
+
+* **The lookup refreshes itself.** `lookup.xlsx` changes all the time, so every build and every inspect first reads the campaign rounds
+  from the GPEI API (the same data and checks as the scope pipeline, `prepare_the_AFRO_SIA_Dashboard_input.py`) and, when the rounds changed,
+  saves the new lookup in the SharePoint folder. The run's manifest records which lookup was used. If the API cannot be read, the build still
+  runs with the lookup in the folder and the log says "NOT refreshed". Check does not refresh: it tells you if the lookup changed since the build.
+  On the PC: `python admin.py lookup` (add `--dry-run` to only look), and `build` / `inspect` do it first as well.
 
 * The cycle is the same as on the PC: Back up > Build > Check > Store values > Publish, or **Run the whole cycle**.
   A failed job leaves the live data untouched and says why in the job log.

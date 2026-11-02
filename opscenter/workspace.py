@@ -53,7 +53,7 @@ class Workspace:
             d.mkdir(parents=True, exist_ok=True)
         src = config.HERE / "engine"
         self.engine.mkdir(parents=True, exist_ok=True)
-        for f in ("admin.py", "add_coadmin_columns.py", "publish_admin_data.py"):
+        for f in ("admin.py", "add_coadmin_columns.py", "publish_admin_data.py", "refresh_lookup.py"):
             shutil.copy2(src / f, self.engine / f)
         shutil.copy2(src / "backup_tool" / "sp_versions.py", self.backup_repo / "sp_versions.py")
         (self.backup_repo / "config" / "tracked_files.json").write_text(json.dumps({"files": [
@@ -73,6 +73,7 @@ class Workspace:
         s = {"backup_repo": str(self.backup_repo), "workspace": str(self.workspace),
              "version_floor": int(extra.get("version_floor", 23)), "builder": "add_coadmin_columns.py",
              "publisher": "publish_admin_data.py", "lookup": str(self.inputs / "lookup.xlsx"),
+             "refresh_lookup": bool(extra.get("refresh_lookup", True)), "gpei_env_file": "",
              "geo": str(self.inputs / "geo_reference.csv"),
              "district_source": str(self.inputs / ds) if ds else "",
              "build_extra_args": extra.get("build_extra_args", []), "max_row_drop_pct": float(extra.get("max_row_drop_pct", 2.0)),
@@ -197,6 +198,22 @@ class Workspace:
         for rel, p in self.single.items():
             if p.is_file():
                 yield rel, p
+
+    def push_lookup(self, emit=None):
+        """The refreshed lookup. Inputs are otherwise never pushed by a job; this one file is, when admin.py refreshed it from the
+        GPEI API (inputs/lookup.xlsx changed since it was pulled)."""
+        p = self.inputs / "lookup.xlsx"
+        if not p.is_file():
+            return False
+        st = p.stat()
+        if self.sig.get(str(p)) == (st.st_size, st.st_mtime_ns):
+            return False
+        self.store.put("inputs/lookup.xlsx", p)
+        self._remember(p)
+        self.save_sig()
+        if emit:
+            emit("   saved to SharePoint: inputs/lookup.xlsx (the refreshed lookup)")
+        return True
 
     def push_changes(self, emit=None):
         """Upload every file that is new or changed since it was pulled / last pushed."""
