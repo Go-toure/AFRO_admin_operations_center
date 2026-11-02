@@ -57,6 +57,7 @@ def main():
     from opscenter import config
     from opscenter.store import Store
     store = Store()
+    t0 = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     print("SharePoint folder: %s" % store.name)
     have = store.walk("")
     plan = []        # (store path, local path)
@@ -133,6 +134,8 @@ def main():
     if not store.exists("inputs/ops_settings.json"):
         store.put_json("inputs/ops_settings.json", sett)
         print("inputs/ops_settings.json written")
+    n_bin, info = store.empty_recycle_bin(t0)         # the version history of re-uploaded files is dropped; empty what that put in the bin
+    print("Recycle bin: %s" % (("emptied of what this run removed (%s)" % info) if n_bin else ("not emptied (%s)" % info if n_bin is None else info)))
     print("\nDone. The app can now read everything it needs from the folder.")
 
 

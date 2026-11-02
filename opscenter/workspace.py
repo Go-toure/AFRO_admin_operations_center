@@ -14,6 +14,7 @@ import csv
 import io
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -44,6 +45,7 @@ class Workspace:
                      ("inspect", self.workspace / "inspect"), ("compare", self.workspace / "compare"),
                      ("inputs", self.inputs)]
         self.single = {"state.json": self.workspace / "state.json"}
+        self.available = {}        # run number -> file names in the SharePoint folder (filled by pull_light)
 
     # ------------------------------------------------------------------ engine set-up
     def prepare(self):
@@ -138,16 +140,25 @@ class Workspace:
             except Exception:
                 if rel == "state.json":
                     pass
+        self.available = {}
         for c in self.store.list("runs"):
             if not c["is_dir"]:
                 continue
-            for f in self.store.list("runs/" + c["name"]):
+            listing = self.store.list("runs/" + c["name"])
+            if re.match(r"^v\d+$", c["name"]):
+                self.available[int(c["name"][1:])] = {f["name"] for f in listing}
+            for f in listing:
                 if f["name"] in ("manifest.json", "check_report.md", "publish.log", "dictionary.log", "build.log") and not f["is_dir"]:
                     rel = "runs/%s/%s" % (c["name"], f["name"])
                     d = self.local_of(rel)
                     self.store.download(rel, d)
                     self._remember(d)
         self.write_settings()
+
+    def has_run_data(self, n):
+        """False when the big files of build vN were removed from the SharePoint folder (storage clean-up)."""
+        names = self.available.get(n)
+        return True if names is None else any(x.startswith("AFRO_admin_data_v%d" % n) and x.endswith(".xlsx") for x in names)
 
     def pull_run(self, n):
         return self.pull_tree("runs/v%d" % n)
@@ -275,6 +286,83 @@ class Workspace:
                 self.sig.pop(str(local), None)
         if emit and gone:
             emit("Storage: %d older backup(s) removed from SharePoint; the newest %d are kept." % (len(gone), keep))
+        return gone
+
+    def _forget(self, local):
+        """Remove a local file or folder and what the sync remembers about it."""
+        local = Path(local)
+        if local.is_dir():
+            shutil.rmtree(local, ignore_errors=True)
+        elif local.is_file():
+            local.unlink()
+        for k in [k for k in self.sig if k == str(local) or k.startswith(str(local) + os.sep)]:
+            self.sig.pop(k, None)
+
+    def sweep_versions(self, emit=None, force=False):
+        """Delete the old versions of every file in the folder (SharePoint keeps each overwrite as a full extra copy and it
+        counts against the storage). Done at the end of a job at most every OPS_SWEEP_HOURS hours, or at once when forced.
+        Returns (versions removed, bytes) or None when it was not due."""
+        import datetime as dt
+        info = self.store.get_json("storage_clean.json") or {}
+        if not force and info.get("at"):
+            try:
+                last = dt.datetime.fromisoformat(info["at"].replace("Z", "+00:00"))
+                if dt.datetime.now(dt.timezone.utc) - last < dt.timedelta(hours=config.SWEEP_EVERY_HOURS):
+                    return None
+            except ValueError:
+                pass
+        n, b = self.store.sweep_versions()
+        from .store import now_iso
+        self.store.put_json("storage_clean.json", {"at": now_iso(), "versions_removed": n, "freed_mb": round(b / 1048576, 1)})
+        if emit:
+            emit("Storage: old versions of the files in the folder removed (%d version(s), about %.1f MB)." % (n, b / 1048576))
+        return n, b
+
+    def prune_runs(self, keep_full, emit=None):
+        """Builds are ~30 MB each. The newest `keep_full` builds and the last published one keep all their files; of the older
+        ones the big files are removed from SharePoint (the manifest, logs, check report and the small dictionary stay).
+        The PC keeps every build in Admin_data_coadministration/workspace/runs."""
+        if keep_full <= 0:
+            return []
+        runs = sorted(int(c["name"][1:]) for c in self.store.list("runs") if c["is_dir"] and re.match(r"^v\d+$", c["name"]))
+        if len(runs) <= keep_full:
+            return []
+        try:
+            pub = int(((self.store.get_json("state.json") or {}).get("published") or {}).get("version") or 0)
+        except (TypeError, ValueError):
+            pub = 0
+        keep = set(runs[-keep_full:]) | ({pub} if pub else set())
+        removed = []
+        for n in runs:
+            if n in keep:
+                continue
+            folder = "runs/v%d" % n
+            for f in self.store.list(folder):
+                if f["is_dir"] or f["size"] < config.RUN_BIG_BYTES:
+                    continue
+                self.store.delete(folder + "/" + f["name"])
+                lp = self.local_of(folder + "/" + f["name"])
+                if lp:
+                    self._forget(lp)
+                removed.append("v%d/%s" % (n, f["name"]))
+        if emit and removed:
+            emit("Storage: the big files of %d older build file(s) removed from SharePoint (kept: the newest %d builds and the last published one)."
+                 % (len(removed), keep_full))
+        return removed
+
+    def prune_by_age(self, prefix, keep, emit=None):
+        """Keep the `keep` most recently changed entries (files or folders) of a folder in the store, remove the others."""
+        if keep <= 0:
+            return []
+        items = sorted(self.store.list(prefix), key=lambda f: f.get("modified", ""), reverse=True)
+        gone = [f["name"] for f in items[keep:]]
+        for n in gone:
+            self.store.delete(prefix + "/" + n)
+            lp = self.local_of(prefix + "/" + n)
+            if lp:
+                self._forget(lp)
+        if emit and gone:
+            emit("Storage: %d older result(s) removed from %s (the newest %d are kept)." % (len(gone), prefix, keep))
         return gone
 
     def prune_dir(self, prefix, keep, emit=None, name_prefix=""):

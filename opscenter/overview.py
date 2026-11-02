@@ -58,6 +58,16 @@ def load(store, ws):
                      "published": (pub.get("at") or "")[:16], "dictionary": pub.get("dictionary") or "",
                      "lookup": _lookup_text(m.get("lookup"))})
     out["runs"] = runs
+    try:
+        sizes = {}
+        for rel, size in store.walk("").items():
+            top = rel.split("/")[0] if "/" in rel else "(files)"
+            sizes[top] = sizes.get(top, 0) + size
+        out["storage"] = {"total": human(sum(sizes.values())),
+                          "parts": ", ".join("%s %s" % (k, human(v)) for k, v in sorted(sizes.items(), key=lambda kv: -kv[1])),
+                          "cleaned": store.get_json("storage_clean.json") or {}}
+    except Exception:
+        out["storage"] = None
     out["lock"] = store.lock_info()
     out["activity"] = list(reversed((store.get_json("activity.json", []) or [])[-60:]))
     # what to do next

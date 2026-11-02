@@ -13,7 +13,7 @@ import threading
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 PORT = int(sys.argv[1])
 STORE = Path(sys.argv[2])
@@ -82,7 +82,7 @@ class H(BaseHTTPRequestHandler):
 
     def child_meta(self, p):
         st = p.stat()
-        d = {"name": p.name, "size": st.st_size if p.is_file() else 0, "lastModifiedDateTime": "2026-10-30T12:00:00Z"}
+        d = {"name": p.name, "size": st.st_size if p.is_file() else 0, "lastModifiedDateTime": __import__("datetime").datetime.utcfromtimestamp(st.st_mtime).strftime("%Y-%m-%dT%H:%M:%SZ")}
         d["folder" if p.is_dir() else "file"] = {}
         return d
 
@@ -90,6 +90,19 @@ class H(BaseHTTPRequestHandler):
         p, b = self.path, self.body()
         if p.endswith("/token"):
             return self.send(200, {"access_token": "T", "expires_in": 3600})
+        if p.startswith("/drives/DRIVE1/items/F:") and p.endswith("/permanentDelete"):
+            if state.get("noperm"):
+                return self.send(403, {"error": "denied"})
+            rel = unquote(p[len("/drives/DRIVE1/items/F:"):-len("/permanentDelete")])
+            t = STORE / rel
+            if t.is_file():
+                t.unlink()
+            elif t.is_dir():
+                shutil.rmtree(t)
+            else:
+                return self.send(404, {"error": "nf"})
+            state["perm"] = state.get("perm", 0) + 1
+            return self.send(204)
         sp = parse_store_path(p)
         if sp and sp[1] == "createUploadSession":
             state["upload"][sp[0]] = bytearray()
@@ -149,6 +162,12 @@ class H(BaseHTTPRequestHandler):
             if "AdminOps" in url or "/:f:/" in url:
                 return self.send(200, store_item())
             return self.send(200, file_item("ITEM1"))
+        if p.startswith("/__ctl"):
+            q = parse_qs(urlparse(p).query)
+            state["noperm"] = q.get("noperm", ["0"])[0] == "1"
+            if q.get("addver"):
+                FV["F:" + q["addver"][0]] = [{"id": "%d.0" % i, "lastModifiedDateTime": "2026-10-2%dT10:00:00Z" % i, "size": 5000} for i in (4, 3, 2, 1)]
+            return self.send(200, {"perm": state.get("perm", 0), "store_bin": len([x for x in state["bin"] if x.get("store")])})
         if p.startswith("/dl/"):
             return self.send(200, PATHS[p.rsplit("/", 1)[1]].read_bytes(), "application/octet-stream")
         if p.startswith("/up/") or p.startswith("/sup/"):
@@ -162,14 +181,14 @@ class H(BaseHTTPRequestHandler):
             if tail == "children":
                 if not t.is_dir():
                     return self.send(404, {"error": "nf"})
-                return self.send(200, {"value": [self.child_meta(c) for c in sorted(t.iterdir())]})
+                return self.send(200, {"value": [self.child_meta(c) | {"id": "F:" + c.relative_to(STORE).as_posix()} for c in sorted(t.iterdir())]})
             if tail == "content":
                 if not t.is_file():
                     return self.send(404, {"error": "nf"})
                 return self.send(200, t.read_bytes(), "application/octet-stream")
             if not t.exists():
                 return self.send(404, {"error": "nf"})
-            return self.send(200, self.child_meta(t) | {"id": "x"})
+            return self.send(200, self.child_meta(t) | {"id": "F:" + rel})
         k = item_of(p)
         if k:
             if p.endswith("/versions"):
@@ -186,6 +205,8 @@ class H(BaseHTTPRequestHandler):
         if p.startswith("/drives/DRIVE1/items/F:") and "/versions/" in p:
             iid, _, vid = unquote(p[len("/drives/DRIVE1/items/"):]).partition("/versions/")
             FV[iid] = [v for v in FV.get(iid, []) if v["id"] != vid]
+            state["bin"].append({"id": "BV" + iid + vid, "name": iid.rsplit("/", 1)[-1][2:] if iid.startswith("F:") and "/" not in iid else iid.rsplit("/", 1)[-1],
+                                 "deletedDateTime": "2099-01-01T00:00:00Z", "size": 1000, "store": True})
             return self.send(204)
         if "/versions/" in p:
             k, vid = item_of(p), p.rsplit("/", 1)[1]
@@ -197,6 +218,8 @@ class H(BaseHTTPRequestHandler):
         sp = parse_store_path(p)
         if sp:
             t = STORE / sp[0]
+            if t.exists():
+                state["bin"].append({"id": "BS" + sp[0], "name": t.name, "deletedDateTime": "2099-01-01T00:00:00Z", "store": True})
             if t.is_file():
                 t.unlink()
             elif t.is_dir():

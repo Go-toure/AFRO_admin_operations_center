@@ -21,7 +21,7 @@ Do these in order. Steps 1-4 are on your PC (Git Bash, in `Gith_repositories`), 
 ## 1. A folder on SharePoint for the app (the "store")
 
 Create an empty folder next to the data, for example `GISWORKSPACE / AdminOps`. Open the folder, **Copy link**, keep it.
-The folder will hold the newest 3 backups (about 80 MB with files of 27 MB) plus about 30 MB per run. The app registration that publishes your files
+The folder will hold the newest 3 backups (about 80 MB with files of 27 MB) plus the big files of the newest builds (about 30 MB each; older builds are cleaned up automatically, see "Storage" below). The app registration that publishes your files
 (the same `SHAREPOINT_*` values as in `SharePoint_version_backup/config/secrets.env`) must be able to write in that
 folder; it can if it can already replace `AFRO_admin_data.xlsx`, which lives in the same site.
 
@@ -89,6 +89,7 @@ Sign in at connect.posit.cloud, **Publish**, choose **Shiny**, pick the reposito
 | `OPS_MIN_BUILD_GB` (optional) | free memory needed to start a build, default 5 |
 | `GPEI_API_TOKEN` | the same token as `GPEI_API_TOKEN` in the scope folder's `config/secrets.env` (poliogo.afro.who.int/dashboard/api/apitoken). With it, the lookup is refreshed from the GPEI API at the start of every build and inspect; without it the app uses the lookup that is in the folder and says so in the job log |
 | `OPS_KEEP_BACKUPS` (optional) | backups of the live file kept on SharePoint, default 3 |
+| `OPS_KEEP_RUNS`, `OPS_KEEP_RESULTS`, `OPS_SWEEP_HOURS` (optional) | builds that keep their big files (2), inspect/compare results kept (3), hours between full version sweeps (24) |
 
 After the first deployment open the content settings and set the compute memory (8 GB or more to build) and, if your
 plan allows, who may view the app. Then publish again if asked.
@@ -102,6 +103,26 @@ plan allows, who may view the app. Then publish again if asked.
 5. Run a full cycle from the app **and** `python admin.py build` on the PC from the same live file, then
    `python admin.py compare v25 <the app's build>`: the two builds must agree (download the app's file from Files).
    Publish from the app only after that.
+
+## Storage on SharePoint
+
+What the app keeps on SharePoint, and what it cleans up by itself at the end of every job (nothing needs to be done by hand; the
+button "Clean up now" in the Cycle tab does it at once):
+
+| What | Kept | Variable |
+|---|---|---|
+| Backups of the live file | newest 3 | `OPS_KEEP_BACKUPS` |
+| Earlier live dictionaries | newest 3 | `OPS_KEEP_DICT_COPIES` |
+| Builds (`runs/vNN`) | the big files (above 250 KB) of the newest 2 builds and of the last published one; older builds keep only their manifest, logs, check report and small dictionary | `OPS_KEEP_RUNS`, `OPS_RUN_BIG_KB` |
+| Inspect and compare results | newest 3 of each | `OPS_KEEP_RESULTS` |
+| Version history of every file in the folder | current version only: removed at every overwrite, and the whole folder is swept once a day (`OPS_SWEEP_HOURS`, default 24) | |
+| Recycle bin | deleted files are removed for good (permanent delete); removed versions are emptied from the site recycle bin | |
+
+The PC keeps everything (`SharePoint_version_backup` and `Admin_data_coadministration/workspace/runs`), so nothing is lost for good.
+The Overview shows the size of the folder and the result of the last full clean-up. The live data file and dictionary are handled by the
+publish step (it deletes their version history and empties the deleted copies from the recycle bin). If SharePoint refuses to empty the
+recycle bin for this app (it needs the beta recycle bin permission), the job log says so; then empty it by hand once in a while
+(Site contents > Recycle bin > Second-stage), or ask IT.
 
 ## Day to day
 

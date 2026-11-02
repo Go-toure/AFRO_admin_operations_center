@@ -78,6 +78,7 @@ class JobManager:
     def _run(self, job, fn, user, locked):
         store = ws = None
         token = None
+        t0 = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         status, message = "failed", "did not finish"
         try:
             store = self._store_factory()
@@ -105,6 +106,16 @@ class JobManager:
                         job.emit("%d file(s) saved to the SharePoint folder." % len(sent))
                     ws.prune_backups(config.KEEP_BACKUPS, job.emit)
                     ws.prune_dir("dictionary_backups", config.KEEP_DICT_COPIES, job.emit, "AFRO_admin_data_dictionary_")
+                    ws.prune_runs(config.KEEP_RUNS, job.emit)
+                    ws.prune_by_age("inspect", config.KEEP_RESULTS, job.emit)
+                    ws.prune_by_age("compare", config.KEEP_RESULTS, job.emit)
+                    ws.sweep_versions(job.emit, force=getattr(job, "force_sweep", False))
+                    n_bin, info = store.empty_recycle_bin(t0)
+                    if n_bin:
+                        job.emit("Storage: recycle bin emptied of what this clean-up removed: %s." % info)
+                    elif n_bin is None:
+                        job.emit("Storage: the recycle bin was not emptied (%s). Removed versions and files stay in the site recycle bin "
+                                 "until it is emptied (Site contents > Recycle bin > Second-stage)." % info)
                     ws.push_changes(job.emit)                  # the shortened catalog
             except Exception as e:
                 job.emit("WARNING: could not save everything to SharePoint (%s: %s)" % (type(e).__name__, e))

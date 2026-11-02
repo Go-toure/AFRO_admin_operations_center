@@ -93,6 +93,11 @@ class Store:
         item = self.g.share_item(config.STORE_URL)
         if "folder" not in item and item.get("file"):
             raise StoreError("OPS_STORE_SHARE_URL points to a file, not to a folder.")
+        self._perm_ok = True               # permanentDelete accepted for this app (switched off at the first refusal)
+        self.site_id = (item.get("parentReference") or {}).get("siteId")
+        self.cleaned = set()               # names of what the clean-up removed in this job (to find them in the recycle bin)
+        self.versions_removed = 0
+        self.versions_bytes = 0
         self.drive = item["parentReference"]["driveId"]
         self.root = item["id"]
         self.name = item.get("name", "")
@@ -118,7 +123,7 @@ class Store:
             b = r.json()
             for c in b.get("value", []):
                 out.append({"name": c["name"], "size": int(c.get("size") or 0), "is_dir": "folder" in c,
-                            "modified": c.get("lastModifiedDateTime", "")})
+                            "modified": c.get("lastModifiedDateTime", ""), "id": c.get("id")})
             url = b.get("@odata.nextLink")
         return out
 
@@ -187,7 +192,7 @@ class Store:
                 item_id = r.json().get("id")
             except ValueError:
                 pass
-            self._drop_versions(item_id, len(data))
+            self._drop_versions(item_id, len(data), path)
             return
         r = self.g.request("POST", self._at(path) + "/createUploadSession",
                            json={"item": {"@microsoft.graph.conflictBehavior": "replace"}})
@@ -226,13 +231,16 @@ class Store:
                     start = int(str(rng[0]).split("-")[0])
             except Exception:
                 pass
+        self._drop_versions(item_id, size, path)
 
-    def _drop_versions(self, item_id, size):
-        """SharePoint keeps every overwrite of a file as a full extra copy. Overwritten files of 1 MB or more lose
-        those copies at once (best effort; the app's own history lives in the runs and the backups)."""
-        if not item_id or size < 1_000_000:
+    def _drop_versions(self, item_id, size, path=""):
+        """SharePoint keeps every overwrite of a file as a full extra copy that counts against the storage. An overwritten file
+        of config.VERSION_DROP_MIN bytes or more loses those copies at once (best effort; the app's own history lives in the
+        runs and the backups)."""
+        if not item_id or size < config.VERSION_DROP_MIN or path.strip("/") == "lock.json":
             return 0
         try:
+            self.cleaned.add(path.strip("/").split("/")[-1].lower())
             return self.purge_versions(item_id)
         except Exception:
             return 0
@@ -248,12 +256,80 @@ class Store:
             d = self.g.request("DELETE", base + "/" + v["id"])
             if d.status_code in (200, 204, 404):
                 n += 1
+                self.versions_removed += 1
+                self.versions_bytes += int(v.get("size") or 0)
         return n
+
+    def sweep_versions(self, prefix=""):
+        """Delete the old versions of every file below a folder (the current version stays). Returns (versions removed, bytes)."""
+        before_n, before_b = self.versions_removed, self.versions_bytes
+
+        def rec(p):
+            for c in self.list(p):
+                child = (p + "/" + c["name"]) if p else c["name"]
+                if c["is_dir"]:
+                    rec(child)
+                elif c.get("id") and child != "lock.json":
+                    try:
+                        if self.purge_versions(c["id"]):
+                            self.cleaned.add(c["name"].lower())
+                    except StoreError:
+                        pass
+        rec(prefix.strip("/"))
+        return self.versions_removed - before_n, self.versions_bytes - before_b
+
+    def empty_recycle_bin(self, since_iso):
+        """Best effort: remove from the site recycle bin the versions and files this job deleted (same names, deleted since the
+        job started), so the space is really freed. Uses the Graph beta recycle bin API; the app may lack the permission.
+        Returns (items removed or None, text)."""
+        if not self.site_id or not self.cleaned:
+            return 0, "nothing to empty"
+        try:
+            ids, freed = [], 0
+            url = f"{config.GRAPH_BETA}/sites/{self.site_id}/recycleBin/items?$top=200"
+            pages = 0
+            while url and pages < 30:
+                r = self.g.request("GET", url)
+                if r.status_code != 200:
+                    return None, "recycle bin not readable (HTTP %s)" % r.status_code
+                pages += 1
+                body = r.json()
+                for it in body.get("value", []):
+                    if (it.get("name") or "").lower() in self.cleaned and (it.get("deletedDateTime") or "") >= since_iso:
+                        ids.append(it["id"])
+                        freed += int(it.get("size") or 0)
+                url = body.get("@odata.nextLink")
+            if not ids:
+                return 0, "nothing of this job found in the recycle bin"
+            removed = 0
+            for k in range(0, len(ids), 50):
+                r = self.g.request("POST", f"{config.GRAPH_BETA}/sites/{self.site_id}/recycleBin/items/delete", json={"ids": ids[k:k + 50]})
+                if r.status_code not in (200, 204):
+                    return removed, "recycle bin delete refused (HTTP %s); %d removed" % (r.status_code, removed)
+                removed += len(ids[k:k + 50])
+            return removed, "%d item(s), about %.1f MB" % (removed, freed / 1048576)
+        except Exception as e:
+            return None, type(e).__name__
 
     def put_json(self, path, obj):
         self.put(path, json.dumps(obj, indent=1, ensure_ascii=False).encode("utf-8"))
 
-    def delete(self, path):
+    def delete(self, path, permanent=True):
+        """Remove a file or folder. By default it is deleted for good: a normal delete only moves it to the site recycle bin,
+        where it keeps using the storage for weeks. If SharePoint refuses the permanent delete for this app, the normal
+        delete is used (and not retried with the permanent one again)."""
+        self.cleaned.add(path.strip("/").split("/")[-1].lower())
+        if permanent and self._perm_ok:
+            g = self.g.request("GET", self._at(path))
+            if g.status_code == 404:
+                return
+            iid = g.json().get("id") if g.status_code == 200 else None
+            if iid:
+                d = self.g.request("POST", f"{config.GRAPH}/drives/{self.drive}/items/{iid}/permanentDelete")
+                if d.status_code in (200, 204):
+                    return
+                if d.status_code in (400, 401, 403, 404, 405, 501):
+                    self._perm_ok = False
         r = self.g.request("DELETE", self._at(path))
         if r.status_code not in (200, 204, 404):
             raise StoreError("Cannot delete %s (HTTP %s)." % (path, r.status_code))

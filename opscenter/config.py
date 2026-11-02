@@ -21,6 +21,7 @@ WORKDIR = Path(os.environ.get("OPS_WORKDIR", "/tmp/ops"))
 
 # Test hooks: the same variables the publish script reads
 GRAPH = os.environ.get("PUBLISH_GRAPH_BASE", "https://graph.microsoft.com/v1.0")
+GRAPH_BETA = os.environ.get("PUBLISH_GRAPH_BETA", "https://graph.microsoft.com/beta")
 TOKEN_URL = os.environ.get("PUBLISH_TOKEN_URL", "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token")
 
 # Named users: {"operator1": {"name": "Operator One", "role": "operator", "hash": "pbkdf2$<salt>$<hex>"}, ...}
@@ -33,6 +34,11 @@ SKIP_MEMORY_CHECK = os.environ.get("OPS_SKIP_MEMORY_CHECK", "") == "1"
 KEEP_BACKUPS = int(os.environ.get("OPS_KEEP_BACKUPS", "3"))       # backups of the live file kept on SharePoint (the PC keeps all)
 KEEP_DICT_COPIES = int(os.environ.get("OPS_KEEP_DICT_COPIES", "3"))  # earlier live dictionaries kept on SharePoint
 KEEP_ACTIVITY = 500
+KEEP_RUNS = int(os.environ.get("OPS_KEEP_RUNS", "2"))             # builds that keep their big files on SharePoint (+ the last published one)
+KEEP_RESULTS = int(os.environ.get("OPS_KEEP_RESULTS", "3"))       # newest inspect folders / compare files kept on SharePoint
+RUN_BIG_BYTES = int(os.environ.get("OPS_RUN_BIG_KB", "250")) * 1024   # files of an old build at or above this size are removed
+VERSION_DROP_MIN = 0                                              # an overwritten file of this size or more loses its version history at once (lock.json excepted)
+SWEEP_EVERY_HOURS = int(os.environ.get("OPS_SWEEP_HOURS", "24"))   # full version clean-up of the whole folder, at the end of a job, at most this often
 
 
 def load_users():

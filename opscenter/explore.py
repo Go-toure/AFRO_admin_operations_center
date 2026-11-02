@@ -31,7 +31,7 @@ def sources(ws):
     """[(value, label)] for the pickers: the live file, every finished build, every backup."""
     out = [("live", "live file (newest backup)")]
     for n, m in reversed(local_runs(ws)):
-        if m.get("build", {}).get("ok"):
+        if m.get("build", {}).get("ok") and ws.has_run_data(n):
             out.append(("v%d" % n, "build v%d (%s)" % (n, "published" if m.get("published") else "not published")))
     for r in reversed(catalog(ws)):
         out.append(("b%s" % r["version"], "backup %s - %s by %s" % (r["version"], (r.get("sharepoint_modified_utc") or "")[:10],

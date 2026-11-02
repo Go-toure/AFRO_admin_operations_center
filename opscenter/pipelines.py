@@ -99,6 +99,8 @@ def ensure_run(ctx, n):
     """The files of run vN and the backup it started from."""
     ctx.emit("Reading run v%d from the SharePoint folder ..." % n)
     ctx.ws.pull_run(n)
+    need(ctx, ctx.ws.has_run_data(n), "The big files of v%d were removed from the SharePoint folder to save space (only the newest %d builds "
+         "and the last published one keep them). The PC still has them in workspace/runs." % (n, config.KEEP_RUNS))
     m = dict(local_runs(ctx.ws)).get(n, {})
     b = m.get("base", {})
     name = re.split(r"[\\/]", str(b.get("path", "")))[-1]
@@ -230,6 +232,14 @@ def p_lookup(ctx):
         admin_ok(ctx, "lookup")
     finally:
         ctx.ws.push_lookup(ctx.emit)
+
+
+@operator_only
+def p_cleanup(ctx):
+    """Clean the folder now: the old versions of every file, the older builds' big files, old results, the recycle bin.
+    (The same clean-up runs at the end of every job; the version sweep of the whole folder at most once a day.)"""
+    ctx.job.force_sweep = True
+    ctx.emit("Cleaning the SharePoint folder ...")
 
 
 def ensure_source(ctx, spec):

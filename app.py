@@ -199,6 +199,11 @@ def server(input, output, session):
         start("Build the next version", pipelines.p_build)
 
     @reactive.effect
+    @reactive.event(input.j_clean)
+    def _jc():
+        start("Clean up the SharePoint storage", pipelines.p_cleanup)
+
+    @reactive.effect
     @reactive.event(input.j_lookup)
     def _jl():
         start("Refresh the lookup", pipelines.p_lookup)
@@ -333,6 +338,12 @@ def server(input, output, session):
         return ui.div(
             ui.layout_columns(*tiles, col_widths=[3, 3, 3, 3]),
             ui.div(ui.p(ui.strong("Next: "), d["next"]), banner, style="margin:14px 0 6px;"),
+            ui.p(ui.strong("SharePoint folder: "), "%s in total (%s). Older backups, builds, results and file versions are cleaned up automatically%s." %
+                 (d["storage"]["total"], d["storage"]["parts"],
+                  (" (last full clean-up %s: %s version(s), %s MB freed)" % (d["storage"]["cleaned"].get("at", "")[:16].replace("T", " "),
+                                                                          d["storage"]["cleaned"].get("versions_removed", 0),
+                                                                          d["storage"]["cleaned"].get("freed_mb", 0))) if d["storage"].get("cleaned") else ""),
+                 class_="note") if d.get("storage") else ui.div(),
             ui.h5("Builds"),
             ui.output_data_frame("runs_table"),
             ui.h5("Backups of the live file", style="margin-top:18px;"),
@@ -378,6 +389,8 @@ def server(input, output, session):
                     card("4  Store the check_dp values", "Writes the check_dp values into the file (no Excel needed).", "j_values", "Store values"),
                     card("5  Publish", "Replaces the data file and then the data dictionary on SharePoint, keeps no version history there, backs up again. Stops if the live file changed since the build.", "j_publish", "Publish data + dictionary", True),
                     card("Dictionary only", "Pushes just the data dictionary of the last published build.", "j_dict", "Push the dictionary"),
+                    card("Clean up the SharePoint storage", "Removes the old versions of every file in the folder, the big files of older builds, old results and what sits in the "
+                         "recycle bin because of them. This already happens at the end of every job; use it to do it right now.", "j_clean", "Clean up now"),
                     card("Refresh the lookup", "Reads the campaign rounds from the GPEI API and updates the lookup in the SharePoint folder. This is also done "
                          "automatically at the start of every build and every inspect.", "j_lookup", "Refresh the lookup"),
                     card("All steps", "Build, check, store values and publish in one go. Stops at the first problem.", "j_all", "Run the whole cycle", True),
