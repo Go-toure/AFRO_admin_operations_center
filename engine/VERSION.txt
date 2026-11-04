@@ -1,5 +1,5 @@
-4c12743db748 admin.py
-f06580b34f82 add_coadmin_columns.py
+9a80babde2f6 admin.py
+71243efbffee add_coadmin_columns.py
 6034f0b7492d publish_admin_data.py
 c314211de6bc refresh_lookup.py
 0263d06ca077 sp_versions.py (patched)
