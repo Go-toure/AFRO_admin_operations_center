@@ -127,7 +127,19 @@ def step_backup(ctx):
     admin_ok(ctx, "backup")
 
 
-def step_build(ctx):
+DUP_MODES = {
+    "none": "Flag only: list the records entered twice in the quality report, remove nothing (default)",
+    "complete": "Fix: remove the extra copy of each record entered twice, keep the most complete one",
+    "first": "Fix: remove the extra copy of each record entered twice, keep the first one",
+}
+
+
+def dup_args(dup):
+    """The builder option for the duplicates choice ('none' adds nothing: exact copies are always removed, the rest is only flagged)."""
+    return ["--", "--resolve-duplicates", dup] if dup in ("complete", "first") else []
+
+
+def step_build(ctx, dup="none"):
     if not config.SKIP_MEMORY_CHECK:
         gb = available_gb()
         need(ctx, gb is None or gb >= config.MIN_BUILD_GB,
@@ -138,7 +150,10 @@ def step_build(ctx):
     ctx.emit("Reading the backups of the live file (the reference for the repairs) ...")
     ctx.ws.pull_snapshots()
     try:
-        admin_ok(ctx, "build")          # refreshes the lookup from the GPEI API first (see engine/refresh_lookup.py)
+        if dup in ("complete", "first"):
+            ctx.emit("Duplicates: the extra copy of each record entered twice will be removed (%s)." %
+                     ("the most complete record is kept" if dup == "complete" else "the first record is kept"))
+        admin_ok(ctx, "build", *dup_args(dup))          # refreshes the lookup from the GPEI API first (see engine/refresh_lookup.py)
     finally:
         ctx.ws.push_lookup(ctx.emit)    # a refreshed lookup is kept even when the build stops
 
@@ -184,9 +199,11 @@ def p_backup(ctx):
     step_backup(ctx)
 
 
-@operator_only
-def p_build(ctx):
-    step_build(ctx)
+def make_build(dup="none"):
+    @operator_only
+    def p(ctx):
+        step_build(ctx, dup)
+    return p
 
 
 @operator_only
@@ -207,18 +224,20 @@ def p_publish(ctx):
     last_step_cleanup(ctx)
 
 
-@operator_only
-def p_all(ctx):
-    """backup -> build -> check -> values -> publish, all in one go (the run files stay on this server meanwhile)."""
-    step_build(ctx)
-    ctx.ws.push_changes(ctx.emit)
-    admin_ok(ctx, "check")
-    ctx.ws.push_changes(ctx.emit)
-    admin_ok(ctx, "excel")
-    ctx.ws.push_changes(ctx.emit)
-    need(ctx, ctx.user["role"] == "operator", "Only operators can publish.")
-    admin_ok(ctx, "publish")
-    last_step_cleanup(ctx)
+def make_all(dup="none"):
+    @operator_only
+    def p(ctx):
+        """backup -> build -> check -> values -> publish, all in one go (the run files stay on this server meanwhile)."""
+        step_build(ctx, dup)
+        ctx.ws.push_changes(ctx.emit)
+        admin_ok(ctx, "check")
+        ctx.ws.push_changes(ctx.emit)
+        admin_ok(ctx, "excel")
+        ctx.ws.push_changes(ctx.emit)
+        need(ctx, ctx.user["role"] == "operator", "Only operators can publish.")
+        admin_ok(ctx, "publish")
+        last_step_cleanup(ctx)
+    return p
 
 
 def ensure_source(ctx, spec):
@@ -252,6 +271,17 @@ def make_inspect(source, country):
             admin_ok(ctx, *args)        # refreshes the lookup from the GPEI API first
         finally:
             ctx.ws.push_lookup(ctx.emit)
+    return p
+
+
+def make_duplicates(source, country):
+    def p(ctx):
+        ensure_inputs(ctx)
+        ensure_source(ctx, source)
+        args = ["duplicates", "--source", source]
+        if country:
+            args += ["--country", country]
+        admin_ok(ctx, *args)        # lists the duplicates and what removing them would do; changes nothing
     return p
 
 

@@ -136,7 +136,7 @@ def server(input, output, session):
             try:
                 src = explore.sources(ws)
                 ch = {v: l for v, l in src}
-                for i in ("x_source", "q_source", "q_a", "q_b"):
+                for i in ("x_source", "q_source", "d_source", "q_a", "q_b"):
                     ui.update_select(i, choices=ch, selected=list(ch)[0] if i != "q_b" else (list(ch)[1] if len(ch) > 1 else list(ch)[0]))
                 ui.update_select("f_run", choices=[r["version"] for r in d["runs"]] or [""])
             except Exception:
@@ -229,10 +229,51 @@ def server(input, output, session):
     def _j1():
         start("Back up the live file", pipelines.p_backup, operator=False)
 
+    pending_dup = reactive.Value(None)      # ("build" | "all", mode) waiting for the operator's yes
+
+    def start_with_duplicates(kind):
+        """Build / whole cycle with the duplicates choice. Removing records is asked once before it starts."""
+        try:
+            mode = input.c_dup()
+        except Exception:
+            mode = "none"
+        if mode not in ("complete", "first"):
+            mode = "none"
+        title = "Build the next version" if kind == "build" else "Run the whole cycle"
+        make = pipelines.make_build if kind == "build" else pipelines.make_all
+        if mode == "none":
+            start(title, make("none"))
+            return
+        if not is_operator() or JM.busy():
+            start(title, make("none"))      # shows the usual 'operators only' / 'a job is running' message
+            return
+        pending_dup.set((kind, mode))
+        ui.modal_show(ui.modal(
+            ui.p("This build will remove the extra copy of every record that was entered twice (same names, same population and results), "
+                 "keeping %s. Records with the same names but other figures are never removed." %
+                 ("the most complete record" if mode == "complete" else "the first record")),
+            ui.p("To see which records that is first, close this window and use 'Find duplicates' in the Quality & compare tab. "
+                 "The Check step then shows the number of duplicates before and after, and the quality report lists every removed row." +
+                 (" The whole cycle goes on to publish the result." if kind == "all" else "")),
+            title="Remove duplicate records?", easy_close=True,
+            footer=ui.TagList(ui.modal_button("Cancel"), ui.input_action_button("j_dup_yes", "Yes, remove them", class_="btn-danger"))))
+
+    @reactive.effect
+    @reactive.event(input.j_dup_yes)
+    def _dup_go():
+        ui.modal_remove()
+        p = pending_dup()
+        pending_dup.set(None)
+        if not p:
+            return
+        kind, mode = p
+        start(("Build the next version" if kind == "build" else "Run the whole cycle") + " (duplicates: %s)" % mode,
+              (pipelines.make_build if kind == "build" else pipelines.make_all)(mode))
+
     @reactive.effect
     @reactive.event(input.j_build)
     def _j2():
-        start("Build the next version", pipelines.p_build)
+        start_with_duplicates("build")
 
     @reactive.effect
     @reactive.event(input.j_check)
@@ -252,12 +293,17 @@ def server(input, output, session):
     @reactive.effect
     @reactive.event(input.j_all)
     def _j7():
-        start("Run the whole cycle", pipelines.p_all)
+        start_with_duplicates("all")
 
     @reactive.effect
     @reactive.event(input.q_inspect)
     def _j8():
         start("Inspect %s" % input.q_source(), pipelines.make_inspect(input.q_source(), input.q_country().strip()), operator=False)
+
+    @reactive.effect
+    @reactive.event(input.q_dups)
+    def _q_dups():
+        start("Find duplicates in %s" % input.d_source(), pipelines.make_duplicates(input.d_source(), input.d_country().strip()), operator=False)
 
     @reactive.effect
     @reactive.event(input.q_compare)
@@ -402,6 +448,13 @@ def server(input, output, session):
             ui.p("Every step runs on the server with the same engine as admin.py on the PC. Files are read from and saved to the "
                  "SharePoint folder, so nothing depends on this server staying up. Only one job runs at a time.", class_="note"),
             status,
+            (ui.div(ui.h5("Duplicates"),
+                    ui.p("A record entered twice (same names, same population and results) is always listed in the quality report. "
+                         "Choose here whether the Build and the whole cycle also remove the extra copy. Records with the same names but "
+                         "other figures are different units and are never removed. See them first with 'Find duplicates' in the "
+                         "Quality & compare tab.", class_="note"),
+                    ui.input_select("c_dup", None, choices=pipelines.DUP_MODES, selected="none", width="100%"),
+                    class_="stepcard") if op else ui.div()),
             ui.layout_columns(
                 ui.div(
                     card("1  Back up the live file", "Saves the file that is on SharePoint now as a new backup version (only if it changed).", "j_backup", "Back up now"),
@@ -509,10 +562,14 @@ def server(input, output, session):
                                         ui.input_select("q_source", "Source", choices={"live": "live file"}),
                                         ui.input_text("q_country", "Country (optional)"),
                                         ui.input_action_button("q_inspect", "Inspect", class_="btn-who"), class_="stepcard"),
+                                 ui.div(ui.h5("Find duplicates"), ui.p("The records entered twice (same names, same population and results), with the one a fix would keep and the one it would remove. Changes nothing.", class_="note"),
+                                        ui.input_select("d_source", "Source", choices={"live": "live file"}),
+                                        ui.input_text("d_country", "Country (optional)"),
+                                        ui.input_action_button("q_dups", "Find duplicates", class_="btn-who"), class_="stepcard"),
                                  ui.div(ui.h5("Compare two versions"), ui.p("What changed between two builds or backups, column by column.", class_="note"),
                                         ui.layout_columns(ui.input_select("q_a", "A", choices={"live": "live file"}), ui.input_select("q_b", "B", choices={"live": "live file"})),
                                         ui.input_action_button("q_compare", "Compare", class_="btn-who"), class_="stepcard"),
-                                 col_widths=[6, 6]),
+                                 col_widths=[4, 4, 4]),
                              ui.p("The result appears in the job log below.", class_="note")),
                 ui.nav_panel("Files & feedback",
                              ui.layout_columns(

@@ -29,7 +29,7 @@ A job copies what the engine needs from the folder, runs the engine, and saves e
 | Overview | live data file and dictionary on SharePoint, last published version, builds, backups, what is next | everybody |
 | Cycle | back up, build, check, store values, publish (data + dictionary, ending with the SharePoint clean-up), the whole cycle | operators (backup: everybody) |
 | Explore | find records in the live file, any build or any backup; download the result | everybody |
-| Quality & compare | inspect a version (quality checks, hygiene, lookup); compare two versions | everybody |
+| Quality & compare | inspect a version (quality checks, hygiene, lookup); find duplicates (which record a fix would keep or remove); compare two versions | everybody |
 | Files & feedback | download any file of a build; the feedback workbook reduced to one country | everybody |
 | Rules | what the system knows and fixes, and the standing decisions | everybody |
 | Activity | who ran what, when, with what result | everybody |
@@ -95,3 +95,7 @@ upload sessions, versions, recycle bin): `python tests/fake_graph.py PORT STORE_
 app at it with `PUBLISH_GRAPH_BASE`, `PUBLISH_GRAPH_BETA` and `PUBLISH_TOKEN_URL`. It was used to develop and test every
 step (seed, backup, build, check, values, publish, dictionary, inspect, compare, lock, memory guard) without touching
 the real SharePoint.
+
+### Duplicates: check and fix
+
+A record entered twice (same Country, Province, District, date, round, vaccine and Response, and the same population and results) is a duplicate. Records with the same names but other figures are different units (most records have no sub-district) and are never treated as duplicates. Exact copies (every value the same) are always removed by the build. For the rest, Quality & compare > Find duplicates lists each group with the record a fix would keep and the one it would remove; it changes nothing. On the Cycle tab, the Duplicates choice decides what Build and the whole cycle do: flag only (default), or remove the extra copy and keep the most complete (or the first) record. Removing asks for a confirmation; the Check step shows the number of duplicates before and after, and the quality report lists every removed row.
