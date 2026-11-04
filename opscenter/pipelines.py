@@ -224,17 +224,6 @@ def p_all(ctx):
 
 
 @operator_only
-def p_lookup(ctx):
-    """Refresh the lookup from the GPEI API now (build and inspect do it anyway at their start)."""
-    ctx.ws.pull_light()
-    ensure_inputs(ctx)
-    try:
-        admin_ok(ctx, "lookup")
-    finally:
-        ctx.ws.push_lookup(ctx.emit)
-
-
-@operator_only
 def p_cleanup(ctx):
     """Clean the folder now: the old versions of every file, the older builds' big files, old results, the recycle bin.
     (The same clean-up runs at the end of every job; the version sweep of the whole folder at most once a day.)"""

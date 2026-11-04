@@ -106,9 +106,8 @@ plan allows, who may view the app. Then publish again if asked.
 
 1. Sign in; the Overview must show the live file, the dictionary, the last published version and the backups.
 2. Cycle > **Back up now**: expect "unchanged" (the seed already holds the newest file).
-3. Cycle > **Refresh the lookup**: the log must say "Lookup is up to date" or "refreshed from the GPEI API" with the number of rounds (474 at the time of writing). If it says NOT refreshed, check `GPEI_API_TOKEN`.
-4. Quality & compare > **Inspect** the live file: it prints the hygiene checks and the lookup agreement.
-5. Run a full cycle from the app **and** `python admin.py build` on the PC from the same live file, then
+3. Quality & compare > **Inspect** the live file. Its log starts with the lookup refresh: it must say "Lookup is up to date" or "refreshed from the GPEI API" with the number of rounds (475 at the time of writing); if it says NOT refreshed, check `GPEI_API_TOKEN`. It then prints the hygiene checks and the lookup agreement.
+4. Run a full cycle from the app **and** `python admin.py build` on the PC from the same live file, then
    `python admin.py compare <PC build> <the app's build file, downloaded from Files>`: the two builds must agree.
    (Done once, on live version 13: identical.)
    **Publish rewrites the live file whenever its content differs from the build**, and it does so even when the data are the

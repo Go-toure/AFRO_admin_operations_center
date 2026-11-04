@@ -240,11 +240,6 @@ def server(input, output, session):
         start("Clean up the SharePoint storage", pipelines.p_cleanup)
 
     @reactive.effect
-    @reactive.event(input.j_lookup)
-    def _jl():
-        start("Refresh the lookup", pipelines.p_lookup)
-
-    @reactive.effect
     @reactive.event(input.j_check)
     def _j3():
         start("Check the newest build", pipelines.p_check)
@@ -420,7 +415,7 @@ def server(input, output, session):
             ui.layout_columns(
                 ui.div(
                     card("1  Back up the live file", "Saves the file that is on SharePoint now as a new backup version (only if it changed).", "j_backup", "Back up now"),
-                    card("2  Build the next version", "Starts from the live file, applies every rule, writes the build, dictionary, audit, quality report and feedback workbook.", "j_build", "Build"),
+                    card("2  Build the next version", "First refreshes the lookup from the GPEI API, then starts from the live file, applies every rule and writes the build, dictionary, audit, quality report and feedback workbook.", "j_build", "Build"),
                     card("3  Check", "Compares the build with the file it started from: columns, rows, wrong-country Responses, duplicates, errors.", "j_check", "Check"),
                 ),
                 ui.div(
@@ -429,8 +424,6 @@ def server(input, output, session):
                     card("Dictionary only", "Pushes just the data dictionary of the last published build.", "j_dict", "Push the dictionary"),
                     card("Clean up the SharePoint storage", "Removes the old versions of every file in the folder, the big files of older builds, old results and what sits in the "
                          "recycle bin because of them. This already happens at the end of every job; use it to do it right now.", "j_clean", "Clean up now"),
-                    card("Refresh the lookup", "Reads the campaign rounds from the GPEI API and updates the lookup in the SharePoint folder. This is also done "
-                         "automatically at the start of every build and every inspect.", "j_lookup", "Refresh the lookup"),
                     card("All steps", "Build, check, store values and publish in one go. Stops at the first problem.", "j_all", "Run the whole cycle", True),
                 ),
                 col_widths=[6, 6]),
