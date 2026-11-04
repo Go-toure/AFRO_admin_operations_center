@@ -235,11 +235,6 @@ def server(input, output, session):
         start("Build the next version", pipelines.p_build)
 
     @reactive.effect
-    @reactive.event(input.j_clean)
-    def _jc():
-        start("Clean up the SharePoint storage", pipelines.p_cleanup)
-
-    @reactive.effect
     @reactive.event(input.j_check)
     def _j3():
         start("Check the newest build", pipelines.p_check)
@@ -253,11 +248,6 @@ def server(input, output, session):
     @reactive.event(input.j_publish)
     def _j5():
         start("Publish the data and the dictionary", pipelines.p_publish)
-
-    @reactive.effect
-    @reactive.event(input.j_dict)
-    def _j6():
-        start("Push the data dictionary", pipelines.p_dictionary)
 
     @reactive.effect
     @reactive.event(input.j_all)
@@ -420,11 +410,8 @@ def server(input, output, session):
                 ),
                 ui.div(
                     card("4  Store the check_dp values", "Writes the check_dp values into the file (no Excel needed).", "j_values", "Store values"),
-                    card("5  Publish", "Replaces the data file and then the data dictionary on SharePoint, keeps no version history there, backs up again. Stops if the live file changed since the build.", "j_publish", "Publish data + dictionary", True),
-                    card("Dictionary only", "Pushes just the data dictionary of the last published build.", "j_dict", "Push the dictionary"),
-                    card("Clean up the SharePoint storage", "Removes the old versions of every file in the folder, the big files of older builds, old results and what sits in the "
-                         "recycle bin because of them. This already happens at the end of every job; use it to do it right now.", "j_clean", "Clean up now"),
-                    card("All steps", "Build, check, store values and publish in one go. Stops at the first problem.", "j_all", "Run the whole cycle", True),
+                    card("5  Publish", "Replaces the data file and then the data dictionary on SharePoint, keeps no version history there, backs up again. Stops if the live file changed since the build. Its last step cleans up the SharePoint folder (old versions, old builds and results, the recycle bin).", "j_publish", "Publish data + dictionary", True),
+                    card("All steps", "Build, check, store values and publish (with the clean-up) in one go. Stops at the first problem.", "j_all", "Run the whole cycle", True),
                 ),
                 col_widths=[6, 6]),
         )

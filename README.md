@@ -27,7 +27,7 @@ A job copies what the engine needs from the folder, runs the engine, and saves e
 | Tab | What it does | Who |
 |---|---|---|
 | Overview | live data file and dictionary on SharePoint, last published version, builds, backups, what is next | everybody |
-| Cycle | back up, build, check, store values, publish (data + dictionary), dictionary only, the whole cycle | operators (backup: everybody) |
+| Cycle | back up, build, check, store values, publish (data + dictionary, ending with the SharePoint clean-up), the whole cycle | operators (backup: everybody) |
 | Explore | find records in the live file, any build or any backup; download the result | everybody |
 | Quality & compare | inspect a version (quality checks, hygiene, lookup); compare two versions | everybody |
 | Files & feedback | download any file of a build; the feedback workbook reduced to one country | everybody |

@@ -156,19 +156,20 @@ def step_values(ctx):
     admin_ok(ctx, "excel")
 
 
+def last_step_cleanup(ctx):
+    """The last step of a publish: clean the SharePoint folder (the old versions of every file, the older builds' big files, old
+    results, the recycle bin). The clean-up itself runs when the job ends, with the full version sweep forced; it is only asked for
+    here, so a publish that failed does not get there. (Every other job runs the same clean-up, with the sweep of the whole folder
+    at most once a day.)"""
+    ctx.job.force_sweep = True
+    ctx.emit("Last step: cleaning the SharePoint folder (old versions, old builds and results, the recycle bin) ...")
+
+
 def step_publish(ctx):
     n, _ = latest_unpublished(ctx)
     ensure_run(ctx, n)
     need(ctx, ctx.user["role"] == "operator", "Only operators can publish.")
     admin_ok(ctx, "publish")
-
-
-def step_dictionary(ctx):
-    ctx.ws.pull_light()
-    pub = [(n, m) for n, m in local_runs(ctx.ws) if m.get("published")]
-    need(ctx, pub, "Nothing has been published from this app or the PC yet.")
-    ensure_run(ctx, pub[-1][0])
-    admin_ok(ctx, "dictionary")
 
 
 def latest_run_any(ctx):
@@ -203,11 +204,7 @@ def p_values(ctx):
 def p_publish(ctx):
     ctx.ws.pull_light()
     step_publish(ctx)
-
-
-@operator_only
-def p_dictionary(ctx):
-    step_dictionary(ctx)
+    last_step_cleanup(ctx)
 
 
 @operator_only
@@ -221,14 +218,7 @@ def p_all(ctx):
     ctx.ws.push_changes(ctx.emit)
     need(ctx, ctx.user["role"] == "operator", "Only operators can publish.")
     admin_ok(ctx, "publish")
-
-
-@operator_only
-def p_cleanup(ctx):
-    """Clean the folder now: the old versions of every file, the older builds' big files, old results, the recycle bin.
-    (The same clean-up runs at the end of every job; the version sweep of the whole folder at most once a day.)"""
-    ctx.job.force_sweep = True
-    ctx.emit("Cleaning the SharePoint folder ...")
+    last_step_cleanup(ctx)
 
 
 def ensure_source(ctx, spec):

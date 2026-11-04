@@ -118,8 +118,8 @@ plan allows, who may view the app. Then publish again if asked.
 
 ## Storage on SharePoint
 
-What the app keeps on SharePoint, and what it cleans up by itself at the end of every job (nothing needs to be done by hand; the
-button "Clean up now" in the Cycle tab does it at once):
+What the app keeps on SharePoint, and what it cleans up by itself at the end of every job (nothing needs to be done by hand; Publish
+ends with a full clean-up of the whole folder, and every other job does the same at most once a day):
 
 | What | Kept | Variable |
 |---|---|---|
