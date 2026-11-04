@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 from shiny import App, reactive, render, ui
 
-from opscenter import __version__, auth, config, explore, overview, pipelines
+from opscenter import __version__, auth, config, explore, guide, overview, pipelines
 from opscenter.jobs import JobManager
 from opscenter.store import Store, StoreError
 from opscenter.workspace import Workspace
@@ -56,6 +56,14 @@ pre.console, .consolewrap pre { background:#0f1b24; color:#d6e4ee; padding:12px 
 .btn-who:hover { background:#0083bd; color:#fff; }
 .note { color:var(--mut); font-size:.85rem; }
 .nav-tabs .nav-link.active { border-top:3px solid var(--who); font-weight:600; }
+.guide-card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:18px 22px; margin-bottom:14px; }
+.guide-head { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; background:linear-gradient(135deg,#f3f8fc,#e9f1f8); }
+.guide-head h3 { margin:8px 0 4px; font-weight:700; color:#0b3a5a; }
+.guide-head p { margin:0; max-width:640px; }
+.guide-card h4 { font-size:1.05rem; font-weight:700; color:#0b3a5a; border-bottom:1px solid var(--line); padding-bottom:6px; margin:0 0 10px; }
+.guide-card ul { margin:0 0 8px; padding-left:20px; } .guide-card li { margin-bottom:5px; }
+.guide-qr { display:flex; gap:22px; align-items:center; flex-wrap:wrap; }
+.guide-qr img.qr { width:170px; height:170px; border:2px solid var(--line); border-radius:10px; padding:6px; background:#fff; }
 """
 
 app_ui = ui.page_fluid(
@@ -458,7 +466,7 @@ def server(input, output, session):
             ui.layout_columns(
                 ui.div(
                     card("1  Back up the live file", "Saves the file that is on SharePoint now as a new backup version (only if it changed).", "j_backup", "Back up now"),
-                    card("2  Build the next version", "First refreshes the lookup from the GPEI API, then starts from the live file, applies every rule and writes the build, dictionary, audit, quality report and feedback workbook.", "j_build", "Build"),
+                    card("2  Build the next version", "First refreshes the lookup from the GPEI API, then starts from the live file, applies every rule and writes the build, dictionary, audit, quality report, feedback workbook and the fix list by country.", "j_build", "Build"),
                     card("3  Check", "Compares the build with the file it started from: columns, rows, wrong-country Responses, duplicates, errors.", "j_check", "Check"),
                 ),
                 ui.div(
@@ -518,6 +526,87 @@ def server(input, output, session):
         explore.feedback_for_country(src, input.f_country(), out)
         yield out.read_bytes()
 
+    @reactive.calc
+    def fix_file():
+        for n in run_files():
+            if n.startswith("Fix_list_by_country"):
+                return n
+        return None
+
+    @render.download(filename=lambda: "Fix_list_%s_%s.xlsx" % (input.f_country().replace(" ", "_"), input.f_run()))
+    def f_fix():
+        ws, store = get_ws(), get_store()
+        n = fix_file()
+        if not n:
+            raise RuntimeError("This build has no fix list (it was built before the fix list existed).")
+        src = ws.root / "downloads" / input.f_run() / n
+        if not src.is_file():
+            store.download("runs/%s/%s" % (input.f_run(), n), src)
+        out = ws.root / "downloads" / ("fix_%s.xlsx" % input.f_country().replace(" ", "_"))
+        explore.feedback_for_country(src, input.f_country(), out)
+        yield out.read_bytes()
+
+    # ---------------------------------------------------------------- quick start guide
+    @render.download(filename=lambda: guide.PDF_NAME)
+    def g_pdf():
+        pdf = Path(__file__).parent / "www" / guide.PDF_NAME
+        if not pdf.is_file():
+            raise RuntimeError("The PDF is not in this installation: run tools/make_quick_start_pdf.py.")
+        yield pdf.read_bytes()
+
+    @render.ui
+    def guide_ui():
+        www = Path(__file__).parent / "www"
+        qr = None
+        if config.PUBLIC_URL:
+            try:
+                import segno
+                qr = segno.make(config.PUBLIC_URL, error="m").svg_data_uri(scale=6, border=1)
+            except Exception:
+                qr = None
+        gis = ui.tags.img(src="afro_gis_logo.png", alt="AFRO GIS Centre", style="height:54px;margin-top:8px;") if (www / "afro_gis_logo.png").is_file() else None
+
+        def card(title, *body):
+            return ui.div(ui.h4(title), *body, class_="guide-card")
+
+        def block(items):
+            if all(isinstance(it, str) for it in items):
+                return [ui.tags.ul(*[ui.tags.li(it) for it in items])]
+            out, li = [], []
+            for it in items:
+                if isinstance(it, tuple):
+                    li.append(ui.tags.li(ui.tags.b(it[0] + ": "), it[1]))
+                else:
+                    if li:
+                        out.append(ui.tags.ul(*li))
+                        li = []
+                    out.append(ui.p(it))
+            if li:
+                out.append(ui.tags.ul(*li))
+            return out
+        head = ui.div(
+            ui.div(ui.tags.img(src="https://www.who.int/ResourcePackages/WHO/assets/dist/images/logos/en/h-logo-blue.svg",
+                               alt="World Health Organization", style="height:46px;", onerror="this.style.display='none'"),
+                   ui.h3(guide.TITLE), ui.p(guide.SUBTITLE, class_="note")),
+            ui.download_button("g_pdf", "Download PDF", class_="btn-who"), class_="guide-card guide-head")
+        mobile = None
+        if qr:
+            mobile = card("Open the Operations Center on a mobile device",
+                          ui.div(ui.tags.img(src=qr, class_="qr", alt="QR code of the Operations Center"),
+                                 ui.div(ui.p(guide.MOBILE), gis), class_="guide-qr"))
+        elif is_operator():
+            mobile = card("Open the Operations Center on a mobile device",
+                          ui.p("Set the variable OPS_PUBLIC_URL to the address of this app and a QR code appears here.", class_="note"))
+        mail = guide.SUPPORT_EMAIL
+        return ui.div(
+            head,
+            card("About the Operations Center", *[ui.p(t) for t in guide.ABOUT],
+                 ui.tags.b("Key objectives"), ui.tags.ul(*[ui.tags.li(t) for t in guide.OBJECTIVES])),
+            mobile,
+            *[card(h, *block(items)) for h, items in guide.SECTIONS],
+            card("Technical support", ui.p(guide.SUPPORT_TEXT, ui.br(), ui.tags.a(mail, href="mailto:" + mail)) if mail else ui.p("")),
+            ui.p("WHO AFRO GIS Centre  |  version %s" % __version__, class_="note", style="text-align:center;"))
+
     # ---------------------------------------------------------------- rules, activity
     @render.code
     def rules_out():
@@ -542,6 +631,7 @@ def server(input, output, session):
                           ui.input_action_button("logout", "Sign out", class_="btn-sm btn-outline-secondary", style="margin-left:6px;")),
                    class_="ops-head"),
             ui.navset_tab(
+                ui.nav_panel("Quick start", ui.output_ui("guide_ui")),
                 ui.nav_panel("Overview", ui.output_ui("overview_ui")),
                 ui.nav_panel("Cycle", ui.output_ui("cycle_ui")),
                 ui.nav_panel("Explore",
@@ -576,17 +666,18 @@ def server(input, output, session):
                                  ui.div(ui.h5("Files of a build"), ui.input_select("f_run", "Build", choices=[""]),
                                         ui.input_select("f_file", "File", choices=[]),
                                         ui.download_button("f_dl", "Download", class_="btn-who"), class_="stepcard"),
-                                 ui.div(ui.h5("Feedback for one country"), ui.p("The feedback workbook of the chosen build, reduced to one country.", class_="note"),
+                                 ui.div(ui.h5("Feedback and fix list for one country"), ui.p("The feedback workbook (coverage to confirm) and the fix list (records to correct at the source) of the chosen build, reduced to one country.", class_="note"),
                                         ui.input_select("f_country", "Country", choices=[]),
-                                        ui.download_button("f_fb", "Download the country file", class_="btn-who"), class_="stepcard"),
+                                        ui.download_button("f_fb", "Download the feedback", class_="btn-who"),
+                                        ui.download_button("f_fix", "Download the fix list", class_="btn-who", style="margin-left:8px;"), class_="stepcard"),
                                  col_widths=[6, 6])),
                 ui.nav_panel("Rules", ui.output_code("rules_out")),
                 ui.nav_panel("Activity", ui.output_data_frame("activity_table")),
-                id="tabs"),
+                id="tabs", selected="Overview"),
             ui.hr(),
             ui.div(ui.strong("Job log  "), ui.output_ui("job_badge"), style="margin-bottom:6px;"),
             ui.tags.div(ui.output_code("console"), class_="consolewrap"),
         )
 
 
-app = App(app_ui, server)
+app = App(app_ui, server, static_assets=Path(__file__).parent / "www")

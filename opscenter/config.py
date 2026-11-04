@@ -16,6 +16,9 @@ STORE_URL = os.environ.get("OPS_STORE_SHARE_URL", "").strip()    # the folder wh
 ADMIN_URL = os.environ.get("OPS_ADMIN_SHARE_URL", "").strip()    # AFRO_admin_data.xlsx
 DICT_URL = os.environ.get("OPS_DICT_SHARE_URL", "").strip()      # AFRO_admin_data_dictionary.xlsx
 
+# Address of this app (for the QR code of the Quick start page), e.g. https://xxx.share.connect.posit.cloud/
+PUBLIC_URL = os.environ.get("OPS_PUBLIC_URL", "").strip()
+
 # Local scratch space (the cloud disk is not permanent: everything important is in the SharePoint folder)
 WORKDIR = Path(os.environ.get("OPS_WORKDIR", "/tmp/ops"))
 
