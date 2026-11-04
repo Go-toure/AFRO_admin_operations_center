@@ -4,10 +4,18 @@ Do these in order. Steps 1-4 are on your PC (Git Bash, in `Gith_repositories`), 
 
 ## 0. What you need to decide first
 
-* **Plan / memory.** A build peaks near 4 GB. Posit's published plan table (beta announcement) listed Free 4 GB, Basic 8 GB,
-  Enhanced 16 GB per app; check the current numbers on connect.posit.cloud/plans before you subscribe. Use a plan with
-  **8 GB or more** if you want to build from the app; on a smaller plan the app still works for everything else and
-  refuses a build with a clear message (build on the PC with `python admin.py build` instead).
+* **Plan / memory.** Measured on the real data (41,735 records, 164 columns): the builder peaks at about **2.7 GB**
+  (it was 3.6 GB before the memory work in `add_coadmin_columns.py`: each source row is released as the output sheet is
+  filled, and the workbook is freed once it is saved). Inspect peaks at 0.5 GB, Check and Back up are light. The Free plan
+  of Posit Connect Cloud (4 GB, 1 CPU) therefore runs the **whole cycle**: tested end to end, 9 minutes, no restart. The default guard
+  asks for 5 GB of free memory before a build, which a 4 GB server never has: on the Free plan set `OPS_MIN_BUILD_GB` to
+  **3.3** (idle free memory is about 3.8 GB). If the server ever runs out of memory the worker restarts and the
+  SharePoint lock stays until it expires (90 minutes) or an operator clicks **Release the lock** in the Overview.
+  Credits per hour are CPU x 0.75 + GB x 0.25 (about 1.75 for 1 CPU and 4 GB): check Account Usage on connect.posit.cloud.
+  Posit's Free-plan credit limits are enforced from the first usage period that starts on or after 1 November 2026.
+  **Pinned versions:** `requirements.txt` pins `pandas==2.2.3` and `openpyxl==3.1.5`, the versions the engine is tested with
+  on the PC (the memory change uses an openpyxl internal). With them the app's build and the PC's build were compared on
+  the same live file (version 13): every cell identical.
 * **The repository is public** (a free Posit Connect Cloud account can only deploy a public GitHub repository).
   It is safe to be public because it contains **no data, no secret, no SharePoint link and no personal path**: the links
   and the credentials come from the Variables of step 6, and the engine in `engine/` has its links blanked
@@ -86,7 +94,7 @@ Sign in at connect.posit.cloud, **Publish**, choose **Shiny**, pick the reposito
 | `OPS_ADMIN_SHARE_URL` | link of `AFRO_admin_data.xlsx` (step 2) |
 | `OPS_DICT_SHARE_URL` | link of `AFRO_admin_data_dictionary.xlsx` (step 2) |
 | `OPS_USERS` | the JSON of step 4 |
-| `OPS_MIN_BUILD_GB` (optional) | free memory needed to start a build, default 5 |
+| `OPS_MIN_BUILD_GB` | free memory needed to start a build. Default 5 (right for 8 GB or more); **3.3 on the Free plan (4 GB)**, tested |
 | `GPEI_API_TOKEN` | the same token as `GPEI_API_TOKEN` in the scope folder's `config/secrets.env` (poliogo.afro.who.int/dashboard/api/apitoken). With it, the lookup is refreshed from the GPEI API at the start of every build and inspect; without it the app uses the lookup that is in the folder and says so in the job log |
 | `OPS_KEEP_BACKUPS` (optional) | backups of the live file kept on SharePoint, default 3 |
 | `OPS_KEEP_RUNS`, `OPS_KEEP_RESULTS`, `OPS_SWEEP_HOURS` (optional) | builds that keep their big files (2), inspect/compare results kept (3), hours between full version sweeps (24) |
@@ -101,8 +109,13 @@ plan allows, who may view the app. Then publish again if asked.
 3. Cycle > **Refresh the lookup**: the log must say "Lookup is up to date" or "refreshed from the GPEI API" with the number of rounds (474 at the time of writing). If it says NOT refreshed, check `GPEI_API_TOKEN`.
 4. Quality & compare > **Inspect** the live file: it prints the hygiene checks and the lookup agreement.
 5. Run a full cycle from the app **and** `python admin.py build` on the PC from the same live file, then
-   `python admin.py compare v25 <the app's build>`: the two builds must agree (download the app's file from Files).
-   Publish from the app only after that.
+   `python admin.py compare <PC build> <the app's build file, downloaded from Files>`: the two builds must agree.
+   (Done once, on live version 13: identical.)
+   **Publish rewrites the live file whenever its content differs from the build**, and it does so even when the data are the
+   same: a file that somebody re-saved in Excel has different internals from the one Python writes. The publish step skips the upload only
+   when the file on SharePoint already holds the same sheet content. So after someone saves in Excel, the next cycle replaces
+   the file with the pipeline's version (same data, a different size) and deletes the old versions of the live file; tell the team
+   so nobody is surprised by a "modified by another user" message.
 
 ## Storage on SharePoint
 
@@ -134,6 +147,8 @@ recycle bin for this app, the job log says so; then empty it by hand once in a w
 
 * The cycle is the same as on the PC: Back up > Build > Check > Store values > Publish, or **Run the whole cycle**.
   A failed job leaves the live data untouched and says why in the job log.
+* **A job crashed or the app restarted** and the Overview still says Busy: an operator can click **Release the lock** (the confirmation shows who locked it and since when;
+  use it only when that job is really gone, not when someone is running a job from their PC).
 * The PC and the app each keep their own backups. Use one of them as the place where you build; if you build on both,
   publishing stops by itself when the live file changed after the build started, so nothing is overwritten.
   Run `tools/seed_store.py` again to bring PC backups and runs into the app's folder.
@@ -143,6 +158,10 @@ recycle bin for this app, the job log says so; then empty it by hand once in a w
 
 ## What was and was not tested
 
-Tested here, against a simulated SharePoint with the real engine: the seed, every pipeline step, publishing of the data
-and the dictionary, the lock, the memory guard, the interface (login, all tabs, search, a job with live log).
-**Not yet tested against your real SharePoint folder or Posit Connect Cloud**; steps 7.1 to 7.4 are that test.
+Tested against the real SharePoint folder, on the PC (the app run locally) **and on Posit Connect Cloud, Free plan**: backup,
+lookup refresh from the GPEI API, inspect, build, check, store values, publish (the live file was replaced by an identical-data build),
+the dictionary (unchanged, not pushed), the storage clean-up (older backups, old builds, versions; permanent delete), the lock.
+The app's build and a PC build from the same live file are identical.
+
+Not tested: the Release the lock button against a real crashed job; several operators working at the same time; a build
+on a plan with a different memory size (the guard and the variable cover it).
