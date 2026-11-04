@@ -597,14 +597,15 @@ def server(input, output, session):
         elif is_operator():
             mobile = card("Open the Operations Center on a mobile device",
                           ui.p("Set the variable OPS_PUBLIC_URL to the address of this app and a QR code appears here.", class_="note"))
-        mail = guide.SUPPORT_EMAIL
         return ui.div(
             head,
             card("About the Operations Center", *[ui.p(t) for t in guide.ABOUT],
                  ui.tags.b("Key objectives"), ui.tags.ul(*[ui.tags.li(t) for t in guide.OBJECTIVES])),
             mobile,
             *[card(h, *block(items)) for h, items in guide.SECTIONS],
-            card("Technical support", ui.p(guide.SUPPORT_TEXT, ui.br(), ui.tags.a(mail, href="mailto:" + mail)) if mail else ui.p("")),
+            card("Technical support", ui.p(guide.SUPPORT_TEXT, ui.br(),
+                                           *[x for k, m in enumerate(guide.SUPPORT_EMAILS)
+                                             for x in ((" | ",) if k else ()) + (ui.tags.a(m, href="mailto:" + m),)])),
             ui.p("WHO AFRO GIS Centre  |  version %s" % __version__, class_="note", style="text-align:center;"))
 
     # ---------------------------------------------------------------- rules, activity

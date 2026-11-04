@@ -87,6 +87,7 @@ SECTIONS = [
     ]),
 ]
 
-SUPPORT_TEXT = "For technical assistance or data questions, please contact the WHO AFRO GIS Centre team:"
-SUPPORT_EMAIL = os.environ.get("OPS_SUPPORT_EMAIL", "dimafro@who.int").strip()
+SUPPORT_TEXT = "For technical assistance or data questions, please contact the WHO AFRO GIS CENTRE Team:"
+# comma-separated list; OPS_SUPPORT_EMAILS replaces it
+SUPPORT_EMAILS = [e.strip() for e in os.environ.get("OPS_SUPPORT_EMAILS", "afrgodim@who.int,mwanzam@who.int,tourayk@who.int").split(",") if e.strip()]
 PDF_NAME = "WHO_AFRO_Admin_Operations_Center_Quick_Start.pdf"

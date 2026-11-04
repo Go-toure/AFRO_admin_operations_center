@@ -75,7 +75,7 @@ def main():
     for heading, rows in guide.SECTIONS:
         story.append(KeepTogether([Paragraph(escape(heading), h2)] + items(rows)[:2]))
         story += items(rows)[2:]
-    story += [Paragraph("Technical support", h2), Paragraph(escape(guide.SUPPORT_TEXT) + "<br/>" + escape(guide.SUPPORT_EMAIL), body)]
+    story += [Paragraph("Technical support", h2), Paragraph(escape(guide.SUPPORT_TEXT) + "<br/>" + " | ".join('<link href="mailto:%s" color="#0b5fa5">%s</link>' % (m, m) for m in guide.SUPPORT_EMAILS), body)]
 
     def footer(c, d):
         c.saveState()
