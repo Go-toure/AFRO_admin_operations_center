@@ -196,7 +196,7 @@ class Workspace:
 
     # ------------------------------------------------------------------ submissions
     def pull_submission_files(self, sub, emit=None):
-        """Copy the countries' files (xlsx / xlsm / csv) from the submissions folder to workspace/submissions_in, below the same
+        """Copy the countries' files (xlsx / xlsm / xls / xlsb / csv, and zip archives, which the engine opens) from the submissions folder to workspace/submissions_in, below the same
         sub-folders. The folder is only read, never changed. A file that is gone from the folder is removed from the copy."""
         root = self.workspace / "submissions_in"
         root.mkdir(parents=True, exist_ok=True)
@@ -216,7 +216,7 @@ class Workspace:
                     rec((path + "/" + c["name"]) if path else c["name"], r)
                     continue
                 low = c["name"].lower()
-                if not low.endswith((".xlsx", ".xlsm", ".csv")) or c["name"].startswith(("~$", ".")):
+                if not low.endswith((".xlsx", ".xlsm", ".xls", ".xlsb", ".csv", ".zip")) or c["name"].startswith(("~$", ".")):
                     if not c["name"].startswith(("~$", ".")):
                         ext = Path(low).suffix or "(no extension)"
                         other[ext] = other.get(ext, 0) + 1

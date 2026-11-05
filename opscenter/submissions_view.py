@@ -13,7 +13,7 @@ def list_folder(sub):
             r = (rel + "/" + c["name"]) if rel else c["name"]
             if c["is_dir"]:
                 rec((path + "/" + c["name"]) if path else c["name"], r)
-            elif c["name"].lower().endswith((".xlsx", ".xlsm", ".csv")) and not c["name"].startswith(("~$", ".")):
+            elif c["name"].lower().endswith((".xlsx", ".xlsm", ".xls", ".xlsb", ".csv", ".zip")) and not c["name"].startswith(("~$", ".")):
                 out[r] = {"size": c["size"], "modified": (c["modified"] or "")[:16].replace("T", " ")}
     rec("", "")
     return out
@@ -50,5 +50,5 @@ def load(store, ws):
     changed = changed_files
     return {"configured": True, "rows": rows, "not_inspected": new_files, "changed": changed, "in_folder": len(folder),
             "accepted": sum(1 for r in rows if r["Decision"] == "accepted"),
-            "waiting": sum(1 for r in rows if r["Decision"] in ("waiting", "changed since inspected") and r["Status"] != "blocked"),
+            "waiting": sum(1 for r in rows if r["Decision"] in ("waiting", "changed since inspected") and r["Status"] not in ("blocked", "nothing new")),
             "report": (ws.workspace / "submissions" / "Submissions_report.xlsx").is_file()}
