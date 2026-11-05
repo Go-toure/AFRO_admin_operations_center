@@ -205,7 +205,7 @@ class Workspace:
             meta = json.loads(metap.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             meta = {}
-        seen, got, skipped = set(), 0, []
+        seen, got, skipped, other = set(), 0, [], {}
         limit = config.SUBMISSION_MAX_MB * 1024 * 1024
 
         def rec(path, rel):
@@ -217,6 +217,9 @@ class Workspace:
                     continue
                 low = c["name"].lower()
                 if not low.endswith((".xlsx", ".xlsm", ".csv")) or c["name"].startswith(("~$", ".")):
+                    if not c["name"].startswith(("~$", ".")):
+                        ext = Path(low).suffix or "(no extension)"
+                        other[ext] = other.get(ext, 0) + 1
                     continue
                 if c["size"] > limit:
                     skipped.append("%s (%.0f MB)" % (r, c["size"] / 1048576))
@@ -241,6 +244,8 @@ class Workspace:
         metap.write_text(json.dumps(meta), encoding="utf-8")
         if emit:
             emit("Submissions folder: %d file(s) in the folder, %d copied now, %d removed from the local copy." % (len(seen), got, gone))
+            if other:
+                emit("   not data files, not read: %s." % ", ".join("%d %s" % (n, e) for e, n in sorted(other.items())))
             for x in skipped:
                 emit("   NOT READ, larger than %d MB: %s" % (config.SUBMISSION_MAX_MB, x))
         return len(seen)
