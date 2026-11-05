@@ -691,7 +691,7 @@ def prepare_file(path, ctx, prof, template_cols, folder_country=None):
     b = ctx.builder
     name = Path(path).name
     s = {"name": name, "size": Path(path).stat().st_size, "hash": sha256_of(path), "layout": "", "sheet": "", "header_row": "",
-         "rows_read": 0, "rows_used": 0, "excluded": 0, "new": 0, "existing_same": 0, "existing_different": 0, "existing_units": 0, "in_file_duplicates_removed": 0,
+         "rows_read": 0, "rows_used": 0, "excluded": 0, "new": 0, "existing_same": 0, "existing_different": 0, "existing_units": 0, "possible_dup": 0, "in_file_duplicates_removed": 0,
          "qc_errors": 0, "qc_warnings": 0, "countries": "", "status": "blocked", "why": ""}
     det = {"layout": None, "notes": None, "excluded": [], "issues": None, "compare": None, "diffs": None, "campaigns": None, "dups": None}
     lay, et_raw = None, None
@@ -960,6 +960,7 @@ def prepare_file(path, ctx, prof, template_cols, folder_country=None):
     s["existing_same"] = int((cmp_["Status"] == "already in the live file, same figures").sum())
     s["existing_different"] = int((cmp_["Status"] == "already in the live file, other figures").sum())
     s["existing_units"] = int(cmp_["Status"].str.startswith("same names as several").sum())
+    s["possible_dup"] = int(cmp_["Status"].str.startswith("possible duplicate").sum())
     # derived columns and the live file's constants
     yr = P["SIA_date"].dt.year.astype(float)
     mo = P["SIA_date"].dt.month.astype(float)
@@ -1025,6 +1026,8 @@ def prepare_file(path, ctx, prof, template_cols, folder_country=None):
         reasons.append("%d record(s) already in the live file with other figures (not changed)" % s["existing_different"])
     if s["existing_units"]:
         reasons.append("%d record(s) with the same names as several live records and none identical (not added)" % s["existing_units"])
+    if s.get("possible_dup"):
+        reasons.append("%d record(s) that look like live records under another campaign name, round or date (not added): see the Records sheet" % s["possible_dup"])
     if lay["class"] != "template":
         reasons.append("layout: " + lay["class"])
     if det.get("inferred"):
@@ -1048,12 +1051,34 @@ def prepare_file(path, ctx, prof, template_cols, folder_country=None):
     if s["new"] == 0:
         reasons.append("no new record")
     s["status"] = "ready" if not reasons else "review"
-    if reasons == ["no new record"] or (s["new"] == 0 and not s["qc_errors"] and not s["existing_different"] and not s["existing_units"]):
+    if reasons == ["no new record"] or (s["new"] == 0 and not s["qc_errors"] and not s["existing_different"] and not s["existing_units"] and not s.get("possible_dup")):
         s["status"] = "nothing new"
     s["why"] = "; ".join(reasons)
+    P = P[(cmp_["Status"] == "new").values]                 # only the records the live file does not have go to the build
     P = P.drop(columns=["_src_row", "_sheet"])
     P = P[template_cols]
     return s, P, det
+
+
+def place_index(ctx):
+    """{(country, province, district): [(live label, date, vaccine family, total vaccinated, target population, Response, Round_Add)]}"""
+    if getattr(ctx, "_place_idx", None) is None:
+        b, L = ctx.builder, ctx.live
+        cc, pp, dd = L["Country"].map(b._qcountry), L["Province"].map(cn), L["District"].map(cn)
+        dts = pd.to_datetime(L["SIA_date"], errors="coerce")
+        tot = pd.to_numeric(L["TotalNbrVaccPolio"], errors="coerce")
+        pop = pd.to_numeric(L["PopPolio"], errors="coerce")
+        vf = L["Vaccine_type"].map(vaccine_family(b))
+        idx = {}
+        for lab, a, p_, d_, t_, tt, po, v, rs, ro in zip(L.index, cc, pp, dd, dts, tot, pop, vf, L["Response"], L["Round_Add"]):
+            if not pd.isna(t_):
+                idx.setdefault((a, p_, d_), []).append((lab, t_, v, tt, po, rs, ro))
+        ctx._place_idx = idx
+    return ctx._place_idx
+
+
+def vaccine_family(b):
+    return lambda v: frozenset(b._vset(v)) or frozenset({cn(v)}) if isinstance(v, str) and v.strip() else frozenset()
 
 
 def compare_with_live(P, ctx, prof):
@@ -1067,6 +1092,23 @@ def compare_with_live(P, ctx, prof):
         cand = ctx.live_index.get(k)
         if not cand:
             st, note = "new", ""
+            # same place, same vaccine, and the same figures (or the same date) in the live file under another campaign name, round or date
+            pl = place_index(ctx).get((b._qcountry(P.at[i, "Country"]), cn(P.at[i, "Province"]), cn(P.at[i, "District"])))
+            if pl and not pd.isna(P.at[i, "SIA_date"]):
+                fam = vaccine_family(b)(P.at[i, "Vaccine_type"])
+                tot, pop = P.at[i, "TotalNbrVaccPolio"] if "TotalNbrVaccPolio" in P.columns else np.nan, P.at[i, "PopPolio"] if "PopPolio" in P.columns else np.nan
+                for lab, d_, v, tt, po, rs, ro in pl:
+                    if not (fam & v if fam and v else False):
+                        continue
+                    gap = abs((pd.Timestamp(P.at[i, "SIA_date"]) - d_).days)
+                    same_fig = (not pd.isna(tot)) and (not pd.isna(tt)) and tot > 0 and abs(tot - tt) < 0.5 and (pd.isna(pop) or pd.isna(po) or abs(pop - po) < 0.5)
+                    if same_fig and gap <= 120:
+                        st = "possible duplicate: same figures as a live record of another campaign name, round or date"
+                        note = "live row %d (%s %s, %s, %d day(s) apart)" % (lab + 2, rs, ro, d_.strftime("%Y-%m-%d"), gap)
+                        break
+                    if gap <= 10 and not same_fig and st == "new":
+                        st = "possible duplicate: same place, date and vaccine as a live record of another campaign name or round, other figures"
+                        note = "live row %d (%s %s, %s)" % (lab + 2, rs, ro, d_.strftime("%Y-%m-%d"))
         else:
             best, best_d = None, None
             for j in cand:
@@ -1223,10 +1265,10 @@ def inspect_folder(ctx, folder, out_root, template_cols, log=print):
 def write_report(path, rows, details, ctx, not_read=()):
     ov = pd.DataFrame(rows)
     cols = ["name", "path", "status", "decision", "layout", "countries", "rows_read", "rows_used", "excluded", "new", "existing_same",
-            "existing_different", "existing_units", "in_file_duplicates_removed", "qc_errors", "qc_warnings", "why", "hash"]
+            "existing_different", "existing_units", "possible_dup", "in_file_duplicates_removed", "qc_errors", "qc_warnings", "why", "hash"]
     ov = ov[[c for c in cols if c in ov.columns]].rename(columns={"name": "File", "path": "Path", "status": "Status", "decision": "Decision",
         "layout": "Layout", "countries": "Countries", "rows_read": "Rows read", "rows_used": "Rows used", "excluded": "Rows left out",
-        "new": "New records", "existing_same": "Already there (same)", "existing_different": "Already there (other figures)", "existing_units": "Same names as several live records (not added)",
+        "new": "New records", "existing_same": "Already there (same)", "existing_different": "Already there (other figures)", "existing_units": "Same names as several live records (not added)", "possible_dup": "Possible duplicates (not added)",
         "in_file_duplicates_removed": "Exact copies removed", "qc_errors": "Records with an Error", "qc_warnings": "Records with a Warning",
         "why": "Why not ready", "hash": "Content hash"})
     sheets = {"Overview": ov}
