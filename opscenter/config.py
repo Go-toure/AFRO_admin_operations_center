@@ -15,6 +15,7 @@ SECRET = os.environ.get("SHAREPOINT_CLIENT_SECRET", "").strip()
 STORE_URL = os.environ.get("OPS_STORE_SHARE_URL", "").strip()    # the folder where the app keeps runs, backups, inputs
 ADMIN_URL = os.environ.get("OPS_ADMIN_SHARE_URL", "").strip()    # AFRO_admin_data.xlsx
 DICT_URL = os.environ.get("OPS_DICT_SHARE_URL", "").strip()      # AFRO_admin_data_dictionary.xlsx
+SUBMISSIONS_URL = os.environ.get("OPS_SUBMISSIONS_SHARE_URL", "").strip()   # Admin_data_submissions: the countries' files (read only; optional)
 
 # Address of this app (for the QR code of the Quick start page), e.g. https://xxx.share.connect.posit.cloud/
 PUBLIC_URL = os.environ.get("OPS_PUBLIC_URL", "").strip()
@@ -36,6 +37,7 @@ MIN_BUILD_GB = float(os.environ.get("OPS_MIN_BUILD_GB", "5"))     # a build peak
 SKIP_MEMORY_CHECK = os.environ.get("OPS_SKIP_MEMORY_CHECK", "") == "1"
 KEEP_BACKUPS = int(os.environ.get("OPS_KEEP_BACKUPS", "3"))       # backups of the live file kept on SharePoint (the PC keeps all)
 KEEP_DICT_COPIES = int(os.environ.get("OPS_KEEP_DICT_COPIES", "3"))  # earlier live dictionaries kept on SharePoint
+SUBMISSION_MAX_MB = int(os.environ.get("OPS_SUBMISSION_MAX_MB", "60"))   # a file in the submissions folder larger than this is not read
 KEEP_ACTIVITY = 500
 KEEP_RUNS = int(os.environ.get("OPS_KEEP_RUNS", "2"))             # builds that keep their big files on SharePoint (+ the last published one)
 KEEP_RESULTS = int(os.environ.get("OPS_KEEP_RESULTS", "3"))       # newest inspect folders / compare files kept on SharePoint

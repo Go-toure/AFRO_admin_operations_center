@@ -105,3 +105,23 @@ A record entered twice (same Country, Province, District, date, round, vaccine a
 The first tab, Quick start, is the short guide for new users (about, the five steps, what the build corrects, the fix list, duplicates, tips, support). Its text is `opscenter/guide.py`; the Download PDF button serves `www/WHO_AFRO_Admin_Operations_Center_Quick_Start.pdf`, made with `python tools/make_quick_start_pdf.py --url <address of the app>` (needs `pip install reportlab segno`; rerun and commit the PDF when the guide text changes). Set `OPS_PUBLIC_URL` to the address of the app and the page shows a QR code; `OPS_SUPPORT_EMAILS` (comma-separated) changes the contact addresses. Put the AFRO GIS Centre logo at `www/afro_gis_logo.png` to show it beside the QR code.
 
 Every build also writes `Fix_list_by_country.xlsx`: what the build could not correct safely (missing key fields, report dates, target above total population, coverage above the ceiling, very different targets, coverage that differs, provinces to confirm, combined and separate records, records entered twice), one sheet per problem with the row, the column to correct and the current and suggested values. Files & feedback cuts it per country. New automatic corrections (each has a switch, see the Rules tab): standard country names, province spelling, and a target population that is 10 or 100 times off when the reported coverage and the district's other campaigns agree.
+
+### Submissions from the countries
+
+The folder `Admin_data_submissions` on SharePoint (link in the variable `OPS_SUBMISSIONS_SHARE_URL`) holds the files the countries
+send. The **Submissions** tab runs three things, all with the engine's `submissions.py` (the same command on the PC:
+`python admin.py submissions inspect | list | accept FILE | reject FILE`):
+
+1. **Inspect** reads every `.xlsx` / `.xlsm` / `.csv` of the folder (the folder is only read, never changed). It decides whether the
+   file is in the template format (the 164 columns of the live file), or maps the columns when the headers can be recognised with
+   certainty (otherwise the file is blocked with the reason). It normalises what has one safe answer (country, province, vaccine, round,
+   dates, numbers written as text, percent, Year / SIAMTH, country code and block, an empty Response from the lookup), compares every
+   record with the live file (new / already there / same names but other figures / several units) and runs the quality checks.
+   The result is `Submissions_report.xlsx`, the prepared records (`prepared/`) and the `ledger.json`, all kept in the `submissions/`
+   folder of the AdminOps store.
+2. **Accept / Reject**: an operator decides per file; a blocked file cannot be accepted. The decision, who and the note are in the ledger.
+3. **Build** adds the records of the accepted files whose key is not yet in the live file, before the rules run. Nothing that is
+   already in the live file is changed by a submission; records with other figures are listed in the report for the country.
+   The Check step shows how many records were added.
+
+Files stay where they are in the submissions folder; a changed or replaced file must be inspected again.

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from . import config
 from .jobs import StepFailed
+from .store import Store
 
 
 # ----------------------------------------------------------------------------------------------- helpers
@@ -147,6 +148,8 @@ def step_build(ctx, dup="none"):
              "Use a Posit plan with more memory, or build on the PC with 'python admin.py build'." % (gb or 0, config.MIN_BUILD_GB))
     ctx.ws.pull_light()
     ensure_inputs(ctx)
+    if ctx.ws.pull_submissions():
+        ctx.emit("Reading the ledger of the submissions: the accepted files are added to this build.")
     ctx.emit("Reading the backups of the live file (the reference for the repairs) ...")
     ctx.ws.pull_snapshots()
     try:
@@ -282,6 +285,44 @@ def make_duplicates(source, country):
         if country:
             args += ["--country", country]
         admin_ok(ctx, *args)        # lists the duplicates and what removing them would do; changes nothing
+    return p
+
+
+def sub_ledger(ws):
+    """The ledger of the submissions as kept in the local copy (after a pull)."""
+    try:
+        return json.loads((ws.workspace / "submissions" / "ledger.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"files": {}}
+
+
+@operator_only
+def p_sub_inspect(ctx):
+    """Read every file of the submissions folder, say whether it is in the template format, check every record and value, and
+    compare with the live file. Changes nothing in the live file and nothing in the folder of the countries."""
+    need(ctx, config.SUBMISSIONS_URL, "The variable OPS_SUBMISSIONS_SHARE_URL (share link of the Admin_data_submissions folder) is not set.")
+    ensure_inputs(ctx)
+    step_backup(ctx)                       # 'live' = the newest backup of the file on SharePoint
+    ctx.ws.pull_submissions()              # the ledger: earlier decisions stay
+    ctx.emit("Reading the files of the submissions folder ...")
+    sub = Store(ctx.store.g, config.SUBMISSIONS_URL)
+    n = ctx.ws.pull_submission_files(sub, ctx.emit)
+    need(ctx, n > 0, "The submissions folder has no .xlsx / .xlsm / .csv file.")
+    try:
+        admin_ok(ctx, "submissions", "inspect")
+    finally:
+        ctx.ws.push_lookup(ctx.emit)
+    ctx.ws.prune_prepared(ctx.emit)
+
+
+def make_sub_decide(action, target, note):
+    @operator_only
+    def p(ctx):
+        ctx.ws.pull_submissions()
+        args = ["submissions", action, target, "--by", ctx.user["name"]]
+        if note:
+            args += ["--note", note]
+        admin_ok(ctx, *args)
     return p
 
 

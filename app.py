@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 from shiny import App, reactive, render, ui
 
-from opscenter import __version__, auth, config, explore, guide, overview, pipelines
+from opscenter import __version__, auth, config, explore, guide, overview, pipelines, submissions_view
 from opscenter.jobs import JobManager
 from opscenter.store import Store, StoreError
 from opscenter.workspace import Workspace
@@ -105,6 +105,7 @@ def server(input, output, session):
     ov = reactive.value(None)
     last_find = reactive.value(None)
     rules_text = reactive.value("")
+    subs = reactive.value(None)
 
     # ---------------------------------------------------------------- login
     @render.text
@@ -120,6 +121,7 @@ def server(input, output, session):
             user.set(u)
             ov_task()
             rules_task()
+            subs_task()
 
     @reactive.effect
     @reactive.event(input.logout)
@@ -167,6 +169,20 @@ def server(input, output, session):
         if rules_task.status() == "success":
             rules_text.set(rules_task.result())
 
+    @reactive.extended_task
+    async def subs_task():
+        def work():
+            store = get_store()
+            return submissions_view.load(store, get_ws(store))
+        return await asyncio.to_thread(work)
+
+    @reactive.effect
+    def _subs_done():
+        if subs_task.status() == "success":
+            subs.set(subs_task.result())
+        elif subs_task.status() == "error":
+            ui.notification_show("Could not read the submissions: %s" % subs_task.error(), type="error", duration=12)
+
     @reactive.effect
     @reactive.event(input.refresh)
     def _refresh():
@@ -174,6 +190,7 @@ def server(input, output, session):
             ui.notification_show("A job is running; the overview refreshes when it ends.", duration=5)
             return
         ov_task()
+        subs_task()
 
     # ---------------------------------------------------------------- jobs
     def is_operator():
@@ -304,6 +321,36 @@ def server(input, output, session):
         start_with_duplicates("all")
 
     @reactive.effect
+    @reactive.event(input.s_inspect)
+    def _s_inspect():
+        start("Inspect the submissions", pipelines.p_sub_inspect)
+
+    def decide(action):
+        d = subs()
+        fid = input.s_file()
+        if not d or not fid:
+            ui.notification_show("Choose a file first (inspect the submissions if the list is empty).", type="warning")
+            return
+        row = next((r for r in d["rows"] if r["id"] == fid), None)
+        if row is None:
+            return
+        if action == "accept" and row["Status"] == "blocked":
+            ui.notification_show("A blocked file cannot be accepted: %s" % row["Why"], type="warning", duration=10)
+            return
+        start("%s %s" % ("Accept" if action == "accept" else "Reject", row["File"]),
+              pipelines.make_sub_decide(action, fid, (input.s_note() or "").strip()))
+
+    @reactive.effect
+    @reactive.event(input.s_accept)
+    def _s_accept():
+        decide("accept")
+
+    @reactive.effect
+    @reactive.event(input.s_reject)
+    def _s_reject():
+        decide("reject")
+
+    @reactive.effect
     @reactive.event(input.q_inspect)
     def _j8():
         start("Inspect %s" % input.q_source(), pipelines.make_inspect(input.q_source(), input.q_country().strip()), operator=False)
@@ -349,6 +396,7 @@ def server(input, output, session):
             with reactive.isolate():
                 if user() is not None:
                     ov_task()
+                    subs_task()
 
     # ---------------------------------------------------------------- explore
     @reactive.extended_task
@@ -452,10 +500,13 @@ def server(input, output, session):
         def card(title, text, btn_id, label, primary=False):
             b = ui.input_action_button(btn_id, label, class_="btn-who" if primary else "btn-outline-secondary") if op or btn_id == "j_backup" else ui.span("operators only", class_="note")
             return ui.div(ui.h5(title), ui.p(text), b, class_="stepcard")
+        sd = subs()
+        sub_note = ui.p(ui.strong("Submissions: "), "%d accepted file(s) will be added to the next build as new records." % sd["accepted"],
+                        class_="note") if sd and sd.get("configured") and sd.get("accepted") else ui.div()
         return ui.div(
             ui.p("Every step runs on the server with the same engine as admin.py on the PC. Files are read from and saved to the "
                  "SharePoint folder, so nothing depends on this server staying up. Only one job runs at a time.", class_="note"),
-            status,
+            status, sub_note,
             (ui.div(ui.h5("Duplicates"),
                     ui.p("A record entered twice (same names, same population and results) is always listed in the quality report. "
                          "Choose here whether the Build and the whole cycle also remove the extra copy. Records with the same names but "
@@ -466,7 +517,7 @@ def server(input, output, session):
             ui.layout_columns(
                 ui.div(
                     card("1  Back up the live file", "Saves the file that is on SharePoint now as a new backup version (only if it changed).", "j_backup", "Back up now"),
-                    card("2  Build the next version", "First refreshes the lookup from the GPEI API, then starts from the live file, applies every rule and writes the build, dictionary, audit, quality report, feedback workbook and the fix list by country.", "j_build", "Build"),
+                    card("2  Build the next version", "First refreshes the lookup from the GPEI API, then starts from the live file, adds the records of the accepted submissions, applies every rule and writes the build, dictionary, audit, quality report, feedback workbook and the fix list by country.", "j_build", "Build"),
                     card("3  Check", "Compares the build with the file it started from: columns, rows, wrong-country Responses, duplicates, errors.", "j_check", "Check"),
                 ),
                 ui.div(
@@ -476,6 +527,82 @@ def server(input, output, session):
                 ),
                 col_widths=[6, 6]),
         )
+
+    # ---------------------------------------------------------------- submissions
+    @render.ui
+    def subs_ui():
+        d = subs()
+        op = is_operator()
+        if d is None:
+            return ui.p("Reading the submissions ... (one moment)", class_="note")
+        if not d.get("configured"):
+            return ui.div(ui.p("The submissions folder is not connected. Set the variable OPS_SUBMISSIONS_SHARE_URL to the share link of the "
+                               "Admin_data_submissions folder (see DEPLOY.md).", class_="note"), class_="stepcard")
+        tiles = [tile("Files in the folder", str(d["in_folder"]), "%d not inspected yet" % len(d["not_inspected"]) if d["not_inspected"] else "all inspected"),
+                 tile("Waiting for a decision", str(d["waiting"]), "ready or to review"),
+                 tile("Accepted", str(d["accepted"]), "added to the next build"),
+                 tile("Changed since inspected", str(len(d["changed"])), "inspect again" if d["changed"] else "none")]
+        report = ui.download_button("s_report", "Download the full report (xlsx)", class_="btn-outline-secondary") if d.get("report") else ui.span()
+        decide_card = ui.div(
+            ui.h5("2  Decide"),
+            ui.p("Open the report first: it lists, file by file, the layout found, every correction made to the values, the records that "
+                 "are new, the ones already in the live file (with other figures: listed, never changed), and the issues. An accepted file "
+                 "goes into the next Build as new records only; nothing that is already in the live file is changed. A blocked file cannot be "
+                 "accepted.", class_="note"),
+            ui.input_select("s_file", "File", choices={r["id"]: "%s  (%s, %s)" % (r["File"], r["Status"], r["Decision"]) for r in d["rows"]}, width="100%"),
+            ui.output_ui("s_why"),
+            ui.input_text("s_note", "Note (optional, kept in the ledger)", width="100%"),
+            ui.input_action_button("s_accept", "Accept", class_="btn-who"),
+            ui.input_action_button("s_reject", "Reject", class_="btn-outline-danger", style="margin-left:8px;"),
+            class_="stepcard") if op else ui.div(ui.p("Only operators accept or reject a file.", class_="note"))
+        return ui.div(
+            ui.layout_columns(*tiles, col_widths=[3, 3, 3, 3]),
+            ui.div(ui.h5("1  Inspect"),
+                   ui.p("Reads every file of the submissions folder (the folder itself is never changed), says whether it is in the template "
+                        "format or which of its columns could be mapped with certainty, checks every record and value against what the live file "
+                        "and the lookup teach, corrects what has one safe answer, and compares with the live file. Nothing is published.",
+                        class_="note"),
+                   (ui.input_action_button("s_inspect", "Inspect the submissions", class_="btn-who") if op else ui.span("operators only", class_="note")),
+                   ui.span(" "), report, class_="stepcard", style="margin-top:14px;"),
+            ui.h5("Files"),
+            ui.output_data_frame("subs_table"),
+            (ui.div(ui.h5("In the folder, not inspected yet", style="margin-top:14px;"), ui.output_data_frame("subs_new")) if d["not_inspected"] else ui.div()),
+            ui.div(style="height:10px;"),
+            decide_card,
+            ui.p("The records of the accepted files are added by the next Build (or the whole cycle); the Check step shows how many. "
+                 "Files stay where they are and a ledger in the SharePoint folder of the app keeps every decision.", class_="note"),
+        )
+
+    @render.data_frame
+    def subs_table():
+        d = subs()
+        cols = ["File", "Layout", "Status", "Decision", "Countries", "Records read", "New", "Already there", "Other figures", "Several units",
+                "Errors", "Warnings", "Left out", "Note"]
+        rows = [{c: r[c] for c in cols} for r in (d or {}).get("rows", [])]
+        return render.DataGrid(pd.DataFrame(rows, columns=cols), height="auto", width="100%")
+
+    @render.ui
+    def s_why():
+        d = subs()
+        try:
+            fid = input.s_file()
+        except Exception:
+            fid = None
+        row = next((r for r in (d or {}).get("rows", []) if r["id"] == fid), None)
+        if not row:
+            return ui.div()
+        return ui.div(ui.strong("What the inspection found: "), row["Why"] or "nothing to report", ui.br(),
+                      ui.span("Layout: %s. Inspected %s." % (row["Layout"], row["Inspected"]), class_="note"), style="margin:0 0 12px;")
+
+    @render.data_frame
+    def subs_new():
+        d = subs()
+        return render.DataGrid(pd.DataFrame((d or {}).get("not_inspected", [])), height="auto")
+
+    @render.download(filename="Submissions_report.xlsx")
+    def s_report():
+        p = get_ws().workspace / "submissions" / "Submissions_report.xlsx"
+        yield p.read_bytes()
 
     # ---------------------------------------------------------------- files and feedback
     @reactive.calc
@@ -635,6 +762,7 @@ def server(input, output, session):
                 ui.nav_panel("Quick start", ui.output_ui("guide_ui")),
                 ui.nav_panel("Overview", ui.output_ui("overview_ui")),
                 ui.nav_panel("Cycle", ui.output_ui("cycle_ui")),
+                ui.nav_panel("Submissions", ui.output_ui("subs_ui")),
                 ui.nav_panel("Explore",
                              ui.layout_columns(
                                  ui.input_select("x_source", "Source", choices={"live": "live file"}),

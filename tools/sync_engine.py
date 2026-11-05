@@ -20,7 +20,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
 ENGINE = HERE / "engine"
-ADMIN_FILES = ("admin.py", "add_coadmin_columns.py", "publish_admin_data.py", "refresh_lookup.py")
+ADMIN_FILES = ("admin.py", "add_coadmin_columns.py", "publish_admin_data.py", "refresh_lookup.py", "submissions.py")
 
 
 def patch_backup_tool(text):

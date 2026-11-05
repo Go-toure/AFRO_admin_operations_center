@@ -62,9 +62,23 @@ SECTIONS = [
         ("Duplicates choice", "(Cycle tab) decides what Build does: flag only (default), or remove the extra copy and keep the most "
                               "complete or the first record. Removing asks for a confirmation."),
     ]),
+    ("New submissions from the countries (Submissions tab)", [
+        "The files the countries send are kept in the SharePoint folder Admin_data_submissions. The app only reads that folder: it never "
+        "moves, renames or deletes a file there.",
+        ("1  Inspect", "reads every file, says whether it is in the template format or which columns could be mapped with certainty "
+                       "(otherwise the file is blocked with the reason), checks every record and value, and compares with the live file. "
+                       "It corrects what has one safe answer (names, spelling, dates, numbers written as text, the country code, Year and month, "
+                       "an empty Response from the lookup) and lists every correction in the report."),
+        ("2  Decide", "an operator accepts or rejects each file after reading the report. A blocked file cannot be accepted."),
+        ("3  Build", "adds the records of the accepted files that are not yet in the live file. A record that is already there is never "
+                     "changed: when the figures differ it is only listed in the report for the country. The Check step shows how many were added."),
+        "Every decision is kept in a ledger in the SharePoint folder of the app (who, when, note). A file that is changed or replaced "
+        "must be inspected again.",
+    ]),
     ("The tabs", [
         ("Overview", "the live file, the newest build, the backups and who did what last."),
         ("Cycle", "the steps above. Operators only, except the backup."),
+        ("Submissions", "inspect the files of the countries, read the report, accept or reject each file."),
         ("Explore", "find records in the live file, a build or a backup by country, province, district, Response, round or date."),
         ("Quality & compare", "inspect a version, find duplicates, compare two versions column by column."),
         ("Files & feedback", "download the files of a build and the feedback or fix list of one country."),

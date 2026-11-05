@@ -7,6 +7,8 @@ Layout of the SharePoint folder (the store)           local copy (under OPS_WORK
     runs/vNN/<manifest, build, dictionary, ...>     -> workspace/runs/vNN/        (not the bulky out/ folder)
     dictionary_backups/                             -> workspace/dictionary_backups/
     inspect/, compare/                              -> workspace/inspect, workspace/compare
+    submissions/ledger.json, report, prepared/      -> workspace/submissions   (the countries' own files are read from their
+                                                       folder into workspace/submissions_in and never written back)
     inputs/lookup.xlsx, geo_reference.csv, ...      -> inputs/
     activity.json, lock.json                        (used by the app only)
 """
@@ -43,7 +45,7 @@ class Workspace:
         self.maps = [("catalog", self.backup_repo / "catalog"), ("snapshots", self.backup_repo / "snapshots"),
                      ("runs", self.workspace / "runs"), ("dictionary_backups", self.workspace / "dictionary_backups"),
                      ("inspect", self.workspace / "inspect"), ("compare", self.workspace / "compare"),
-                     ("inputs", self.inputs)]
+                     ("submissions", self.workspace / "submissions"), ("inputs", self.inputs)]
         self.single = {"state.json": self.workspace / "state.json"}
         self.available = {}        # run number -> file names in the SharePoint folder (filled by pull_light)
 
@@ -55,7 +57,7 @@ class Workspace:
             d.mkdir(parents=True, exist_ok=True)
         src = config.HERE / "engine"
         self.engine.mkdir(parents=True, exist_ok=True)
-        for f in ("admin.py", "add_coadmin_columns.py", "publish_admin_data.py", "refresh_lookup.py"):
+        for f in ("admin.py", "add_coadmin_columns.py", "publish_admin_data.py", "refresh_lookup.py", "submissions.py"):
             shutil.copy2(src / f, self.engine / f)
         shutil.copy2(src / "backup_tool" / "sp_versions.py", self.backup_repo / "sp_versions.py")
         (self.backup_repo / "config" / "tracked_files.json").write_text(json.dumps({"files": [
@@ -76,7 +78,7 @@ class Workspace:
              "version_floor": int(extra.get("version_floor", 23)), "builder": "add_coadmin_columns.py",
              "publisher": "publish_admin_data.py", "lookup": str(self.inputs / "lookup.xlsx"),
              "refresh_lookup": bool(extra.get("refresh_lookup", True)), "gpei_env_file": "",
-             "geo": str(self.inputs / "geo_reference.csv"),
+             "geo": str(self.inputs / "geo_reference.csv"), "submissions_dir": str(self.workspace / "submissions_in"),
              "district_source": str(self.inputs / ds) if ds else "",
              "build_extra_args": extra.get("build_extra_args", []), "max_row_drop_pct": float(extra.get("max_row_drop_pct", 2.0)),
              "excel_method": "python", "scope_script_dir": "", "scope_data_dir": ""}
@@ -190,6 +192,88 @@ class Workspace:
             self.store.download("snapshots/admin/" + name, d)
             self._remember(d)
             n += 1
+        return n
+
+    # ------------------------------------------------------------------ submissions
+    def pull_submission_files(self, sub, emit=None):
+        """Copy the countries' files (xlsx / xlsm / csv) from the submissions folder to workspace/submissions_in, below the same
+        sub-folders. The folder is only read, never changed. A file that is gone from the folder is removed from the copy."""
+        root = self.workspace / "submissions_in"
+        root.mkdir(parents=True, exist_ok=True)
+        metap = root / ".sources.json"
+        try:
+            meta = json.loads(metap.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        seen, got, skipped = set(), 0, []
+        limit = config.SUBMISSION_MAX_MB * 1024 * 1024
+
+        def rec(path, rel):
+            nonlocal got
+            for c in sub.list(path):
+                r = (rel + "/" + c["name"]) if rel else c["name"]
+                if c["is_dir"]:
+                    rec((path + "/" + c["name"]) if path else c["name"], r)
+                    continue
+                low = c["name"].lower()
+                if not low.endswith((".xlsx", ".xlsm", ".csv")) or c["name"].startswith(("~$", ".")):
+                    continue
+                if c["size"] > limit:
+                    skipped.append("%s (%.0f MB)" % (r, c["size"] / 1048576))
+                    continue
+                seen.add(r)
+                dest = root / r
+                sig = [c["size"], c["modified"]]
+                if dest.is_file() and meta.get(r) == sig:
+                    continue
+                sub.download(r, dest)
+                meta[r] = sig
+                got += 1
+                if emit:
+                    emit("   read from the submissions folder: %s" % r)
+        rec("", "")
+        gone = 0
+        for p in list(root.rglob("*")):
+            if p.is_file() and p.name != ".sources.json" and p.relative_to(root).as_posix() not in seen:
+                p.unlink()
+                meta.pop(p.relative_to(root).as_posix(), None)
+                gone += 1
+        metap.write_text(json.dumps(meta), encoding="utf-8")
+        if emit:
+            emit("Submissions folder: %d file(s) in the folder, %d copied now, %d removed from the local copy." % (len(seen), got, gone))
+            for x in skipped:
+                emit("   NOT READ, larger than %d MB: %s" % (config.SUBMISSION_MAX_MB, x))
+        return len(seen)
+
+    def pull_submissions(self):
+        """The ledger, the report and the prepared record files kept in the SharePoint folder."""
+        return self.pull_tree("submissions")
+
+    def prune_prepared(self, emit=None):
+        """Remove the prepared record files of files that are no longer in the submissions folder or were replaced by a newer version."""
+        out = self.workspace / "submissions"
+        try:
+            led = json.loads((out / "ledger.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return 0
+        keep = {Path(e["prepared"]).name for e in led.get("files", {}).values()
+                if e.get("prepared") and e.get("present", True) and not e.get("superseded")}
+        n = 0
+        pdir = out / "prepared"
+        if pdir.is_dir():
+            for p in list(pdir.iterdir()):
+                if p.is_file() and p.name not in keep:
+                    p.unlink()
+                    self._forget(p)
+                    n += 1
+        try:
+            for c in self.store.list("submissions/prepared"):
+                if not c["is_dir"] and c["name"] not in keep:
+                    self.store.delete("submissions/prepared/" + c["name"], permanent=True)
+        except Exception:
+            pass
+        if n and emit:
+            emit("   removed %d prepared file(s) of files that are gone or replaced." % n)
         return n
 
     # ------------------------------------------------------------------ push

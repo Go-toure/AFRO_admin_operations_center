@@ -89,11 +89,12 @@ def now_iso():
 
 
 class Store:
-    def __init__(self, graph=None):
+    def __init__(self, graph=None, url=None):
+        """The app's own folder (OPS_STORE_SHARE_URL), or another folder given by its share link (the submissions folder, read only)."""
         self.g = graph or Graph()
-        item = self.g.share_item(config.STORE_URL)
+        item = self.g.share_item(url or config.STORE_URL)
         if "folder" not in item and item.get("file"):
-            raise StoreError("OPS_STORE_SHARE_URL points to a file, not to a folder.")
+            raise StoreError("The share link points to a file, not to a folder.")
         self._perm_ok = True               # permanentDelete accepted for this app (switched off at the first refusal)
         self._perm_probed = False
         self.site_id = (item.get("parentReference") or {}).get("siteId")
