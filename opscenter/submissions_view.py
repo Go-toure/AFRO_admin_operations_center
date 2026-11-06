@@ -43,6 +43,7 @@ def load(store, ws):
                      "Decided by": e.get("decided_by", ""), "Countries": e.get("countries", ""),
                      "Records read": e.get("rows_used", ""), "New": e.get("new", ""), "Already there": e.get("existing_same", ""),
                      "Other figures": e.get("existing_different", ""), "Several units": e.get("existing_units", ""),
+                     "Possible duplicates": e.get("possible_dup", ""), "Also in another file": e.get("overlap", ""),
                      "Errors": e.get("qc_errors", ""), "Warnings": e.get("qc_warnings", ""), "Left out": e.get("excluded", ""),
                      "Inspected": e.get("last_inspected", ""), "Why": e.get("why", ""), "Note": e.get("note", "")})
     new_files = [{"File": p, "Modified": f["modified"], "Size KB": round(f["size"] / 1024)} for p, f in sorted(folder.items()) if p not in inspected

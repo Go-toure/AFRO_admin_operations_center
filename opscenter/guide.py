@@ -68,8 +68,17 @@ SECTIONS = [
         ("1  Inspect", "reads every file, says whether it is in the template format or which columns could be mapped with certainty "
                        "(otherwise the file is blocked with the reason), checks every record and value, and compares with the live file. "
                        "It corrects what has one safe answer (names, spelling, dates, numbers written as text, the country code, Year and month, "
-                       "an empty Response from the lookup) and lists every correction in the report."),
-        ("2  Decide", "an operator accepts or rejects each file after reading the report. A blocked file cannot be accepted."),
+                       "an empty Response from the lookup) and lists every correction in the report. "
+                       "It also takes the campaign from the live file, the lookup or the file name when the file does not write it "
+                       "(listed in the report sheet Decisions_needed, to confirm), corrects a year typed wrongly in a date, flags records of an "
+                       "older campaign inside a file, a vaccine that differs from the lookup, coverage above the ceiling, new records that two "
+                       "files both carry (sheet Overlap_between_files), and records that look like live records under another campaign name, "
+                       "province name or date (possible duplicates, never added). Tally sheets, eTally files and call-in workbooks are read as "
+                       "checks against the live file."),
+        ("2  Decide", "an operator accepts or rejects each file after reading the report. A blocked file cannot be accepted. The app remembers "
+                      "the decisions: a file with the same name pattern as one decided before shows that decision, and a re-sent copy of a "
+                      "rejected file with the same layout and number of rows is rejected again. Accepting a file whose campaign was not written in it "
+                      "keeps that campaign for the next inspection."),
         ("3  Build", "adds the records of the accepted files that are not yet in the live file. A record that is already there is never "
                      "changed: when the figures differ it is only listed in the report for the country. The Check step shows how many were added."),
         "Every decision is kept in a ledger in the SharePoint folder of the app (who, when, note). A file that is changed or replaced "

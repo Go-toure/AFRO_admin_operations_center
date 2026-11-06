@@ -577,7 +577,7 @@ def server(input, output, session):
     def subs_table():
         d = subs()
         cols = ["File", "Layout", "Status", "Decision", "Countries", "Records read", "New", "Already there", "Other figures", "Several units",
-                "Errors", "Warnings", "Left out", "Note"]
+                "Possible duplicates", "Also in another file", "Errors", "Warnings", "Left out", "Note"]
         rows = [{c: r[c] for c in cols} for r in (d or {}).get("rows", [])]
         return render.DataGrid(pd.DataFrame(rows, columns=cols), height="auto", width="100%")
 
