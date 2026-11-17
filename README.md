@@ -129,7 +129,7 @@ send. The **Submissions** tab runs four things, all with the engine's `submissio
    in the report for the country. The Check step shows how many records were added.
 4. **Feedback and pending data**: every inspection also writes `Submissions_summary.xlsx`, `Pending_admin_data.xlsx` (a lookup
    round with no data in the live file `pending_days` = 15 days after its start, from `pending_since` = 2025-01-01; sheets
-   Pending_now, Check_other_name, Date_differs_in_live, Received_not_in_live, Not_yet_due, Resolved, Closed) and one workbook per
+   Pending_now, Check_other_name, Date_differs_in_live, Received_not_in_live, Not_yet_due, Resolved, Closed; and Lookup_issues / Lookup_issues_older: live rounds that the lookup cannot place (campaign missing, name or date differs, two campaigns on one date), each with a message for the lookup maintainers; the engine proposes, a person decides) and one workbook per
    country in `feedback_by_country` (a French sheet for the francophone countries). All can be downloaded from the tab; sending them
    to the countries is a person's step. The pending register (`pending_register.json`) of the app is separate from the one on a PC.
 

@@ -83,7 +83,7 @@ SECTIONS = [
                             "findings as a file a person accepted before; and the clean records of any file that is not in the wrong folder or "
                             "against the lookup's vaccine. A person's decision always wins."),
         ("Feedback and pending data", "every inspection also writes a summary, the list of pending admin data (a lookup round with no data in "
-                                      "the live file 15 days after its start), and one workbook per country with what it has to correct, "
+                                      "the live file 15 days after its start; its sheets Lookup_issues list the rounds the lookup cannot place, with a message for the lookup maintainers), and one workbook per country with what it has to correct, "
                                       "confirm or send (a French sheet for the francophone countries). Download them in the Submissions tab; "
                                       "sending them to the countries is a person's step."),
         ("2  Decide", "an operator accepts or rejects each file after reading the report. A blocked file cannot be accepted. The app remembers "
