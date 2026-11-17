@@ -55,7 +55,12 @@ DEFAULTS = {
     "geo": "geo_reference.csv",
     "afrogdb_dir": "",                        # AFRO-Geo-Reference folder (default: next to this repository)
     "district_source": "",                    # optional recovered file used by --district-source
-    "submissions_dir": "workspace/submissions_in",   # the files of the countries (downloaded from the submissions folder)
+    "submissions_dir": "workspace/submissions_in",   # the files of the countries: 'submissions pull' copies them here from SharePoint
+    "submissions_auto": False,                # true: the build also takes the files of automatic rule 1 (see submissions.py), no decision needed
+    "corrections_file": "workspace/corrections.csv",   # corrections a person decided; the build applies them (a cell changes only while it holds the value in Found)
+    "pending_days": 15,                       # a lookup round with no admin data in the live file this many days after its start is marked pending (submissions pending)
+    "pending_since": "2025-01-01",            # rounds that started before this date are old gaps (reference sheet), not pending
+    "submissions_max_mb": 60,                 # a file of the submissions folder larger than this is not copied
     "build_extra_args": [],
     "max_row_drop_pct": 2.0,
     "key_columns": ["Country", "Province", "District", "SIA_date", "Round_Add", "Vaccine_type", "Response"],
@@ -531,12 +536,30 @@ def cmd_build(a):
         cmd += ["--district-source", P(ds)]
     if not getattr(a, "no_submissions", False):
         sm = import_submissions()
-        acc = sm.accepted_files(WORK / "submissions")
+        st = "local" if getattr(a, "no_ledger_pull", False) else submissions_state_pull()
+        if st == "adminops":
+            log("Submissions: the decisions of the Operations Center were read.")
+        else:
+            log("WARNING: the decisions of the Operations Center on the submissions were NOT read (%s). The ledger kept on this PC is used: "
+                "files accepted in the app are not in this build." % st)
+        m["build"]["submissions_ledger"] = st
+        use_auto = bool(S.get("submissions_auto")) and not getattr(a, "no_auto_submissions", False)
+        acc = sm.accepted_files(WORK / "submissions", auto=use_auto)
+        if use_auto:
+            auto_names = [n for n, _, _ in sm.auto_candidates(WORK / "submissions")]
+            m["build"]["submissions_auto"] = auto_names
+            if auto_names:
+                log("Submissions: %d file(s) taken by the automatic rules 1 to 4 (nobody decided on them; a file with findings brings only its clean records, the rest is held back, see Held_back_records): %s" % (len(auto_names), ", ".join(auto_names)))
         if acc:
             log("Submissions: %d accepted file(s) will be added to this build: %s" % (len(acc), ", ".join(n for n, _ in acc)))
             for _, pth in acc:
                 cmd += ["--add-records", pth]
             m["build"]["submissions"] = [n for n, _ in acc]
+    cf = P(S.get("corrections_file")) if S.get("corrections_file") else None
+    if cf and cf.is_file():
+        cmd += ["--corrections", str(cf)]
+        m["build"]["corrections"] = cf.name
+        log("Decided corrections: %s will be applied (a cell changes only while it still holds the value it was found with)." % cf.name)
     cmd += list(S.get("build_extra_args") or []) + list(a.extra or [])
     m["build"]["command"] = " ".join(str(c) for c in cmd)
     rc, text = run_cmd(cmd, cwd=HERE, tee=rd / "build.log")
@@ -624,6 +647,11 @@ def cmd_check(a):
     info.append("rows: %d -> %d (%+d)" % (len(base), len(new), len(new) - len(base)))
     if added:
         info.append("records added from accepted submissions (%s): %d" % (", ".join(m["build"].get("submissions") or []), added))
+    if m["build"].get("submissions_auto"):
+        info.append("files taken by the automatic rules (no person decided on them): %s" % ", ".join(m["build"]["submissions_auto"]))
+    led = m["build"].get("submissions_ledger")
+    if led and led != "adminops":
+        warn.append("the decisions on the submissions were not read from the Operations Center (%s): files accepted in the app are not in this build" % led)
     if drop_pct > float(S["max_row_drop_pct"]):
         hard.append("%.1f%% of the rows disappeared (limit %.1f%%)" % (drop_pct, float(S["max_row_drop_pct"])))
     # 3. key fields blank
@@ -1312,8 +1340,167 @@ def _submissions_ctx(builder):
     return SimpleNamespace(builder=builder, live=live, live_index=index, geo=geo, lookup=lk, live_label=label)
 
 
+def submissions_pull_step(dry_run=False, explicit=False):
+    """Copy the countries' files from the SharePoint folder Admin_data_submissions to submissions_dir (read only on SharePoint).
+    pull_submissions.py reads the link and the sign-in values itself (the backup tool's secrets.env); this script never does.
+    Returns True when the local copy is up to date."""
+    tool = HERE / "pull_submissions.py"
+    if not tool.is_file():
+        if explicit:
+            log("pull_submissions.py is not here: nothing to pull with.")
+            return False
+        return True            # a copy of the engine without the pull (the Operations Center reads the folder itself): use the files in place
+    dest = P(S["submissions_dir"])
+    cmd = [sys.executable, str(tool), "--dest", str(dest), "--max-mb", str(S.get("submissions_max_mb", 60)),
+           "--env-file", str(BACKUP_REPO / "config" / "secrets.env")]
+    if dry_run:
+        cmd.append("--dry-run")
+    log("Reading the files of the submissions folder from SharePoint ...")
+    rc, _ = run_cmd(cmd, cwd=HERE)
+    return rc == 0
+
+
+def submissions_state_pull(dry_run=False):
+    """Copy the DECISIONS on the submissions (ledger, report, prepared records) from the AdminOps folder of the Operations Center
+    to workspace/submissions, read only: the app decides, the PC build adds exactly what the app accepted. The ledger in place is kept
+    in workspace/submissions/ledger_backups. Returns 'adminops' (read), 'no link' (ADMIN_STORE_SHARE_URL not set) or 'failed'."""
+    tool = HERE / "pull_submissions.py"
+    if not tool.is_file():
+        return "no tool"
+    cmd = [sys.executable, str(tool), "--ledger", "--dest", str(WORK / "submissions"),
+           "--env-file", str(BACKUP_REPO / "config" / "secrets.env")]
+    if dry_run:
+        cmd.append("--dry-run")
+    log("Reading the decisions on the submissions from the AdminOps folder ...")
+    rc, text = run_cmd(cmd, cwd=HERE)
+    if rc == 0:
+        return "adminops"
+    return "no link" if "no share link" in text else "failed"
+
+
+def write_pending(sm, builder, ctx, out_root):
+    """Pending admin data: lookup rounds with no records in the live file `pending_days` days after their start. Writes Pending_admin_data.xlsx and the register
+    (pending_register.json) and prints the counts. The country feedback reads the sheet Pending_now, so this runs before it."""
+    import pandas as pd
+    if ctx.lookup is None:
+        log("pending admin data: there is no lookup, nothing to compare with.")
+        return None
+    nodata = builder.lookup_crosscheck(ctx.live, ctx.lookup)[1]
+    days, since = int(S.get("pending_days") or 15), str(S.get("pending_since") or "2025-01-01")
+    res = sm.pending(out_root, nodata, days=days, since=since, update=True, source="the live file (%s) and the lookup of this run" % ctx.live_label, live=ctx.live)
+    target = sm.writable(Path(out_root) / "Pending_admin_data.xlsx", log)
+    with pd.ExcelWriter(target, engine="openpyxl") as xw:
+        for name_, d_ in res.items():
+            d_.to_excel(xw, sheet_name=name_[:31], index=False)
+        for ws in xw.book.worksheets:
+            for col in ws.columns:
+                w = max(len(str(c.value)) if c.value is not None else 0 for c in col[:60])
+                ws.column_dimensions[col[0].column_letter].width = min(max(10, w + 2), 70)
+    pn, rn_ = res["Pending_now"], res["Received_not_in_live"]
+    print("(%d more round(s) have live records of the country near the start date: sheet Check_other_name, they are not asked of the country until checked.)" % len(res["Check_other_name"]))
+    print("\nPending admin data (no records in the live file %d days after the round start, rounds since %s): %d round(s) with nothing received in %d country(ies); "
+          "%d more received in a submitted file but not in the live file yet; %d resolved since the register started; %d not yet due." % (
+              days, since, len(pn), pn["Country"].nunique() if len(pn) else 0, len(rn_), len(res["Resolved"]), len(res["Not_yet_due"])))
+    if len(res["By_country"]):
+        print(res["By_country"].head(15).to_string(index=False))
+    print("Written: %s (register: %s)\n" % (target, Path(out_root) / "pending_register.json"))
+    return res
+
+
+def cmd_corrections(a):
+    """Shows what the corrections file would do to the live file, changing nothing: applied / already in place / skipped, with the reason."""
+    cf = P(S.get("corrections_file"))
+    if not cf.is_file():
+        print("\nThere is no corrections file (%s)." % cf)
+        return
+    builder = import_builder()
+    path, label = resolve_source("live")
+    log("Reading the live file (%s) ..." % label)
+    live = load_norm(path)
+    ch, rep_ = builder.apply_corrections(live, str(cf))
+    print("\nCorrections file %s against the live file (%s):\n  would change %d cell(s); already in place %d; skipped %d" % (cf.name, label, rep_["applied"], rep_["already"], len(rep_["skipped"])))
+    for line, why in rep_["skipped"][:20]:
+        print("    line %s: %s" % (line, why))
+    if ch:
+        import pandas as pd
+        t = pd.DataFrame([{"Line": l_, "Country": live.at[i, "Country"], "District": live.at[i, "District"], "Response": live.at[i, "Response"], "Round": live.at[i, "Round_Add"],
+                           "Column": c_, "Found": f_, "New": v_} for i, c_, v_, f_, w_, l_ in ch])
+        print("\n" + t.head(12).to_string(index=False) + ("\n  ... %d more" % (len(t) - 12) if len(t) > 12 else ""))
+    print("\nThe build applies them (and lists them in the repairs of the audit file). Nothing was changed now.\n")
+
+
 def cmd_submissions(a):
     sm = import_submissions()
+    out_root = WORK / "submissions"
+    if a.action in ("list", "auto", "summary", "feedback", "pending", "accept", "reject") and not getattr(a, "no_pull", False) and not getattr(a, "local", False):
+        if a.action in ("accept", "reject"):
+            die("accept and reject are made in the Operations Center (Submissions tab): the PC reads those decisions and does not make "
+                "its own, so that there is one ledger. To decide here anyway, add --local (the decision then stays on this PC only).")
+        st = submissions_state_pull()
+        if st != "adminops":
+            log("NOTE: the ledger of the Operations Center was not read (%s): this is the ledger kept on this PC." % st)
+    if a.action == "pending":
+        if a.close:
+            if not a.targets:
+                die("give the round to close, as a piece of 'COUNTRY|campaign|Round n' (see the sheet Pending_now).")
+            for t_, m_ in sm.pending_close(out_root, a.targets, a.note or "", a.by or os.environ.get("USERNAME") or os.environ.get("USER") or "operator"):
+                print("  %s: %s" % (t_, m_))
+            print("Run 'python admin.py submissions pending' to refresh Pending_admin_data.xlsx and the country feedback.")
+            return
+        builder = import_builder()
+        ctx = _submissions_ctx(builder)
+        write_pending(sm, builder, ctx, out_root)
+        return
+    if a.action == "feedback":
+        import pandas as pd
+        f, md = sm.feedback(out_root)
+        (out_root / "Feedback_to_countries.md").write_text(md, encoding="utf-8")
+        f.to_excel(sm.writable(out_root / "Feedback_to_countries.xlsx", log), sheet_name="Feedback", index=False)
+        print("\n" + md)
+        print("Written: %s and %s (one line per country, file and matter).\n" % (out_root / "Feedback_to_countries.md", out_root / "Feedback_to_countries.xlsx"))
+        fl = sm.feedback_files(out_root, out_root / "feedback_by_country")
+        print("One workbook per country, ready to send, in %s:" % (out_root / "feedback_by_country"))
+        for c_, p_ in fl:
+            print("  %-34s %s" % (c_, Path(p_).name))
+        print()
+        return
+    if a.action == "summary":
+        audits = sorted(WORK.glob("runs/v*/AFRO_admin_data_coadmin_audit_v*.xlsx"), key=lambda p: int(re.search(r"_v(\d+)\.xlsx$", p.name).group(1)))
+        import pandas as pd
+        res = sm.summary(out_root, audits[-1] if audits else None)
+        if not res:
+            print("\nNothing to summarise: inspect the files first.\n")
+            return
+        target = sm.writable(out_root / "Submissions_summary.xlsx", log)
+        with pd.ExcelWriter(target, engine="openpyxl") as xw:
+            for name, d in res.items():
+                d.to_excel(xw, sheet_name=name[:31], index=False)
+        bc = res.get("By_country")
+        print("\nNew records waiting, by country (taken_by_rules = automatic rules, waiting = needs a person):\n")
+        if bc is not None:
+            print(bc.head(15).to_string(index=False))
+        bl = res.get("Blockers")
+        if bl is not None and len(bl):
+            print("\nWhat holds them back (records affected, who can fix it):\n")
+            print(bl.head(12)[["Finding", "Files", "New_records_affected", "Who can fix it"]].to_string(index=False))
+        mr = res.get("Missing_rounds")
+        if mr is not None and len(mr):
+            print("\nLookup rounds since 2025 with no data in the live file: %d; in a submitted file: %d; not in any file (ask the country): %d" % (
+                len(mr), int(mr["In_a_submitted_file"].sum()), int((~mr["In_a_submitted_file"]).sum())))
+        print("\nFull tables: %s\n" % target)
+        return
+    if a.action == "auto":
+        c = sm.auto_candidates(out_root)
+        led = sm.load_ledger(out_root)["files"]
+        print("\n%s would take %d file(s) into a build (nobody has decided on them; a person's decision always wins):\n" % (sm.AUTO_RULE, len(c)))
+        for n, pth, note in sorted(c):
+            print("  %-80s %s" % (n[:80], note.split(": ", 1)[1]))
+        print("\nEverything else needs a person. Turn it on with \"submissions_auto\": true in admin_settings.json.\n")
+        return
+    if a.action == "pull":
+        if not submissions_pull_step(dry_run=a.dry_run, explicit=True):
+            sys.exit(1)
+        return
     out_root = WORK / "submissions"
     who = a.by or os.environ.get("USERNAME") or os.environ.get("USER") or "operator"
     if a.action == "list":
@@ -1343,16 +1530,49 @@ def cmd_submissions(a):
     if not getattr(a, "no_refresh_lookup", False):
         refresh_lookup_step()
     folder = Path(a.folder) if a.folder else P(S["submissions_dir"])
+    if not a.folder and not getattr(a, "no_pull", False):
+        st = submissions_state_pull()          # earlier decisions stay: the ledger of the app first, then the files
+        if st != "adminops":
+            log("NOTE: the ledger of the Operations Center was not read (%s): the ledger kept on this PC is used." % st)
+        if not submissions_pull_step():
+            log("WARNING: the submissions folder could NOT be read from SharePoint: %s" % (
+                "the copy already in %s is used and may be out of date." % folder if folder.is_dir() else "there is no local copy either."))
     if not folder.is_dir():
-        die("the submissions folder does not exist: %s (download the files there, or give --folder)." % folder)
+        die("the submissions folder does not exist: %s (run 'admin.py submissions pull', or give --folder)." % folder)
     builder = import_builder()
     ctx = _submissions_ctx(builder)
     cols = list(ctx.live.columns)
     rows = sm.inspect_folder(ctx, folder, out_root, cols, log=log)
     ready = sum(1 for r in rows if r["status"] == "ready")
-    print("\n%d file(s): %d ready, %d to review, %d blocked, %d with nothing new (tally sheets are checks)." % (len(rows), ready, sum(1 for r in rows if r["status"] == "review"),
-                                                         sum(1 for r in rows if r["status"] == "blocked"), sum(1 for r in rows if r["status"] == "nothing new")))
-    print("Next: look at %s, then 'admin.py submissions accept <file>' for the files that go into the next build.\n" % (out_root / "Submissions_report.xlsx"))
+    n_na = sum(1 for r in rows if str(r.get("why") or "").startswith("NOT ADMIN DATA"))
+    print("\n%d file(s): %d ready, %d to review, %d blocked (%d of them not admin data: IM, LQAS, AEFI, supplies, call-in, summaries), %d with nothing new (tally sheets are checks)." % (
+        len(rows), ready, sum(1 for r in rows if r["status"] == "review"), sum(1 for r in rows if r["status"] == "blocked"), n_na, sum(1 for r in rows if r["status"] == "nothing new")))
+    print("Records: %d new and clean (they go in by themselves when submissions_auto is on), %d held back with a reason (sheet Held_back_records)." % (
+        sum(int(r.get("clean_new") or 0) for r in rows), sum(int(r.get("held_new") or 0) for r in rows)))
+    # pending admin data (a round with no data in the live file 15 days after its start), then the summary and the feedback to the countries:
+    # they are part of every inspection, nobody has to remember a second command
+    try:
+        write_pending(sm, builder, ctx, out_root)
+    except Exception as ex:
+        log("the pending admin data could not be written (%s): run 'submissions pending'" % ex)
+    try:
+        import pandas as pd
+        audits = sorted(WORK.glob("runs/v*/AFRO_admin_data_coadmin_audit_v*.xlsx"), key=lambda p: int(re.search(r"_v(\d+)\.xlsx$", p.name).group(1)))
+        res = sm.summary(out_root, audits[-1] if audits else None)
+        if res:
+            with pd.ExcelWriter(sm.writable(out_root / "Submissions_summary.xlsx", log), engine="openpyxl") as xw:
+                for name_, d_ in res.items():
+                    d_.to_excel(xw, sheet_name=name_[:31], index=False)
+        f_, md_ = sm.feedback(out_root)
+        (out_root / "Feedback_to_countries.md").write_text(md_, encoding="utf-8")
+        f_.to_excel(sm.writable(out_root / "Feedback_to_countries.xlsx", log), sheet_name="Feedback", index=False)
+        fl_ = sm.feedback_files(out_root, out_root / "feedback_by_country")
+        print("Also written: %s, %s and %s; one workbook per country (%d) in %s." % (out_root / "Submissions_summary.xlsx", out_root / "Feedback_to_countries.xlsx",
+              out_root / "Feedback_to_countries.md", len(fl_), out_root / "feedback_by_country"))
+    except Exception as ex:
+        log("the summary and the feedback could not be written (%s): run 'submissions summary' and 'submissions feedback'" % ex)
+    print("Next: look at %s. Accept or reject in the Operations Center (Submissions tab): the build here reads those decisions. "
+          "What 'inspect' wrote on this PC is a preview; it is replaced by the app's ledger at the next build.\n" % (out_root / "Submissions_report.xlsx"))
 
 
 # ----------------------------------------------------------------------------------------------- find
@@ -1470,7 +1690,11 @@ RULES = [
     ("province-spelling", "Geography", "A Province that is the same name as an Admin1 of the geography reference written differently (spaces, accents, punctuation, filler words: MAI NDOMBE = MAINDOMBE, PROVINCIA DE NAMPULA = NAMPULA, WADIFIRA = WADI FIRA, RS 3 = RS3) gets the reference's spelling. Exact match only, and only when the district does not belong to another province of the reference. Near matches and new Admin1s (Cuando, Sidama ...) are never changed: they are listed in the fix list.", "Request of 4 Nov 2026", "--no-fix-province-spelling"),
     ("digit-error", "Population", "A target population that is 10 or 100 times off (a missing or extra digit) is corrected only when the reported coverage (vaccinated / CVPolio) implies the corrected figure within 10% AND that figure is 0.6 - 1.7 times the median target of the same district's other campaigns. Both must agree; otherwise it stays flagged.", "Request of 4 Nov 2026", "--no-fix-digit-error"),
     ("fix-list", "Checks", "What cannot be corrected safely (missing key fields, report dates, target above total population, coverage above the ceiling, very different targets, coverage that differs, provinces to confirm, combined and separate records, records entered twice) is written to Fix_list_by_country.xlsx: one sheet per problem, with the row, the column to correct, the current and the suggested value. Cut per country in the app.", "Request of 4 Nov 2026", "--no-fix-list"),
-    ("submissions", "Intake", "The files the countries send (SharePoint folder Admin_data_submissions) are inspected one by one: layout (template, template with other header spellings, mapped by certain synonyms, or not usable), normalisation of every cell (capitals, spaces, country / province / vaccine / round spelling, dates, numbers as text, percentages, Year / SIAMTH / Ctry_Code / AFRO_block, the constants the live file has), the portal quality checks, the campaigns against the lookup, duplicates inside the file, and every record against the live file (new / same / other figures). An operator accepts or rejects each file; only accepted files are used, and only their NEW records are added at the end of the next build, before every other rule. Records already in the live file are never changed by a submission: the differences are listed.", "Request of 5 Nov 2026", "admin.py submissions inspect | list | accept | reject; build --no-submissions"),
+    ("submissions", "Intake", "The files the countries send (SharePoint folder Admin_data_submissions, copied read-only to workspace/submissions_in by 'admin.py submissions pull', which 'submissions inspect' runs first) are inspected one by one. The decisions (accept / reject, who, the note) are made in the Operations Center and kept in its AdminOps folder; a build on the PC reads that ledger first (read only, ADMIN_STORE_SHARE_URL) so that it adds exactly what the app accepted, and says so in the manifest and in the check when it could not: layout (template, template with other header spellings, mapped by certain synonyms, or not usable), normalisation of every cell (capitals, spaces, country / province / vaccine / round spelling, dates, numbers as text, percentages, Year / SIAMTH / Ctry_Code / AFRO_block, the constants the live file has), the portal quality checks, the campaigns against the lookup, duplicates inside the file, and every record against the live file (new / same / other figures). A file with no campaign name (a Nigeria eTally or tally) is wired to the lookup by its date: a campaign keeps its planned start date, so data dated on or after a planned start belong to that campaign until the next planned start (at most 60 days back), data of a campaign that ran up to 21 days before its planned start belong to that campaign, and anything else stays unwired for a person; Response, round and the planned date are written and the date in the file is kept in the note. When the file gives a round the lookup does not have (Cycle_2 in the file name, a round column, a hint) and the campaign that started last before the date has its last lookup round just below it, within 60 days, the records are the next round of the same campaign: same Response, that round, the date of the records; the lookup is then missing a round, which is listed in the report sheet Lookup_gaps, and a person confirms. An operator accepts or rejects each file; only accepted files are used, and only their NEW records are added at the end of the next build, before every other rule. Records already in the live file are never changed by a submission: the differences are listed.", "Request of 5 Nov 2026", "admin.py submissions inspect | list | accept | reject; build --no-submissions"),
+    ("submissions-clean", "Intake", "What the intake no longer asks a person about (16 Nov 2026). NO LOSS (17 Nov 2026, automatic rule 4): every new record that passed the validation and the standardisation and is not a duplicate goes into the live file, also when its file has other findings; a record that fails (an Error of the quality checks, the target or the number vaccinated is not a number (text in a calculated column does not hold a record), a key field still empty, another country than the folder) is held back with its reason in the sheet Held_back_records and in prepared/<hash>_held.xlsx, as are records that look like live ones with other figures or match several live records. Files in the wrong folder or with a vaccine that disagrees with the lookup wait whole. NAME ALIGNMENT (17 Nov 2026): a record at the same place, within 3 days of the same date and with the same vaccine as exactly one live record is that live record under another campaign name (CAM-2025-11-01 for CAM-2026-01, NOPV2 for bOPV-nOPV2): it is not added, not held, and the pair is listed as an alias in the inspection. A DIFFERENT ROUND is accepted as the same record only when the file gives no real round (a date, empty) or when the lookup gives the live record's round for that campaign and date; otherwise the record is held for the country to confirm, never dropped (the live file may number a campaign's rounds differently from the lookup). FEEDBACK TO THE COUNTRIES: `python admin.py submissions feedback` writes Feedback_to_countries.md and .xlsx (one line per country, file and matter: target population missing, failed check, empty fields, text instead of numbers, unit not clear, same place and date with other figures, campaign name or round differs, vaccine differs from the lookup, sheet not read, wrong folder, calculated columns with errors), from the held-back records and the findings, in plain words with what the country does; nobody has to write it by hand. It also writes one workbook per country, ready to send, in workspace/submissions/feedback_by_country (sheet What to do with an Action needed column, sheet Records with the held-back rows and the reason; a country with nothing to do gets a file marked information_only); the francophone countries (list FRENCH_COUNTRIES in submissions.py) get the sheet À faire and a French read-me beside the English ones; every inspect writes them too, so one command (inspect, which also pulls the files from SharePoint) gives the report, the summary, the feedback and the country workbooks. NOT ADMIN DATA: a file with no admin columns whose name says IM, LQAS, AEFI, supplies, call-in or a summary is labelled NOT ADMIN DATA and ignored; a file with no template columns and no such name is NOT ignored (it is reported as another layout). (1) Coverage above the ceiling is for reference only: the live file has its own coverage columns, so the records are kept and the inspection only says how many there are. (2) Duplicates are removed: a record with the same place and the same figures as a live record under another campaign name, round or date is not added (the report counts it as removed); a copy of the same new records in two files with the same figures is kept once by the build. Only records with other figures than their twin are left for a person. (3) New records are standardised with the lookup: an empty or near-spelled Response gets the lookup name, an empty round gets the lookup round, and a named campaign whose records carry another date gets the lookup's PLANNED start date (the file's date goes in the notes); this uses the same date rules as the wiring of records without a campaign name, and the round the file gives is respected. Standardised dates are listed (code date_standardized) and the lookup-confirmed rule can accept them.", "Request of 16 Nov 2026", "none: always on in submissions inspect"),
+    ("submissions-pending", "Intake", "PENDING ADMIN DATA (17 Nov 2026). A round of the lookup (GPEI) whose admin data are not in the live file 15 days after its planned start date is marked pending, so the data can be followed until they arrive. Every `submissions inspect` (and `submissions pending`, which only reads the live file and the lookup, about a minute) compares the live file with the lookup of the run and writes Pending_admin_data.xlsx in workspace/submissions: Pending_now (nothing received for the round, in no submitted file, and no live record of the country near its start date: ask the country), Date_differs_in_live (the live file has the campaign and round at another date than the lookup, within 35 days: a date to correct, not missing data; a file is matched to a lookup round by the lookup date of its records, never by the round number it writes), Check_other_name (nothing received but the live file has at least 5 records of the country within 10 days of the start: the round may be there under another campaign name or date; a person aligns the name before the country is asked), Received_not_in_live (a submitted file holds records of the round that are not in the live file yet: the next build, a decision or a correction is what is missing), Not_yet_due (started less than 15 days ago), Resolved (the data arrived), Closed, Older_rounds_no_data (rounds before pending_since, reference only), By_country. Each round has an age group (15-30, 31-90, over 90 days) and the date the engine first flagged it. pending_register.json (workspace/submissions) is the follow-up list: first flagged, resolved when the round is no longer missing, closed when a person says the round did not take place (`python admin.py submissions pending --close \"COUNTRY|campaign|Round n\" --note \"why\"`, then run `submissions pending` again). The rounds of Pending_now are also written into the feedback to the countries (matter: data not received, in English and, for the francophone countries, in French: send the admin data of the round in the AFRO template or tell us the round did not take place); a country with only pending rounds gets a workbook too. The workbooks of an earlier run move to feedback_by_country/_previous so that only the current ones are in the folder; a report that is open in Excel is written under the same name with the time added.", "Request of 17 Nov 2026", "settings pending_days (default 15) and pending_since (default 2025-01-01)"),
+    ("build-corrections", "Build", "DECIDED CORRECTIONS (17 Nov 2026). The engine does not change a live record on its own when a submitted file has other figures or another date for it; a person decides, and the decision is a line in workspace/corrections.csv (columns Country, Province, District, Response, Round_Add, SIA_date, Column, Found, Restored, Reason, Decided_by, Decided_on; one line per cell, the record is found by its identity and the date it has now). The build applies the file (--corrections, setting corrections_file) before the duplicate check and lists every change in the Repairs of the audit file (rule: Decided correction, with the reason and who decided). A cell is changed only while it still holds the value in Found: a line already applied is counted as already in place (also when the record's date was corrected by the same file), and a record or cell changed since is skipped and reported, never overwritten. `python admin.py corrections` shows what the file would change in the live file (applied, already in place, skipped with the reason) and changes nothing. A line with District empty is campaign-wide: it changes every record of Country + Response + Round_Add (optionally one SIA_date) and needs Found, which guards each record; it is how a campaign gets the name the lookup has. Uses so far (17 Nov 2026): Zimbabwe Round 2 of ZIM-2026-03-01_nOPV_sNID (27 districts), dated 2026-06-02 as the lookup says instead of 2026-07-02, with the vaccinated figures of the file Zimbabwe R1 and R2 adminstrative coverage 2026 (vaccinated, nOPV2 total, coverage recalculated; the target population of the live record is kept); Zimbabwe Round 1 figures of the same file; Zimbabwe Round 3 renamed from the placeholder POLIO to the lookup campaign; five DRC campaigns renamed to the lookup name (29 Jan, 26 Feb, 16 Apr 2026, June 2025 Round 2, June 2026 Round 2; 1,282 records). Two DRC cases are NOT renamed: 28 Aug 2025 (the lookup has two campaigns on that date) and 3 Sept 2026 (the live name matches the other lookup campaign of that name).", "Request of 17 Nov 2026", "setting corrections_file (default workspace/corrections.csv; no file, no corrections)"),
+    ("submissions-auto", "Intake", "Automatic rule 1 (switch: submissions_auto in admin_settings.json, off by default). A file nobody has decided on is taken into the build by itself only when every finding of its inspection is harmless: records already in the live file with other figures (never changed by a submission), a header mapping that was certain, records left out, many warnings. A file with an Error, a coverage above the ceiling, a date far from its campaign, a campaign guessed from the live file or the file name, values never seen, cells that are not numbers, a possible duplicate, records also new in another file or an eTally conversion always waits for a person. A decision of a person, accepted or rejected, always wins. Rule 3 (the engine learns from the people): a file with the same name pattern, country folder and layout as a file a person accepted is taken again when it shows no kind of finding that one did not show and none of the hard ones (an Error, several live units, a possible duplicate, an overlap, another country, cells that are not numbers, a vaccine that differs from the lookup, an unreadable sheet). admin.py submissions summary lists, by country, where the new records are, what holds them back and who can fix it, and which lookup rounds with no data are in a submitted file. Rule 2 (needs an inspection made by this version): when every campaign round of the file is a round of the lookup (same country, campaign, date and round) and the vaccine agrees, a campaign taken from the lookup or the file name, a year typed wrongly and an eTally export added up by LGA are harmless too. The files taken are listed in the log, in the manifest and in the check.", "Request of 16 Nov 2026", "--no-auto-submissions; admin.py submissions auto lists what the rule would take"),
     ("text-clean", "Hygiene", "Stray control characters (carriage returns), line breaks and double / edge spaces in Country, Province, District, Response, Vaccine_type and Round_Add are removed.", "Found in District (KAJIADO EAST) 30 Oct 2026", "--no-clean-text"),
     ("dates", "Hygiene", "SIA_date written as text ('18-sept-20') becomes a real date.", "Admin portal", "(always)"),
     ("duplicates", "Hygiene", "Exact copies are removed. A record entered twice (same key AND the same population and results) is reported as Duplicate record and removed only with --resolve-duplicates. Records with the same key but other population or results are different units (most records have no sub-district): never removed, reported only as information (Same names, other figures). Key = Country, Province, District, [Admin_3], SIA_date, Round_Add, Vaccine_type, Response, compared without accents, case or punctuation.", "Admin portal", "--no-dedupe, --resolve-duplicates; admin.py duplicates lists them and what a fix would do; the Operations Center has the same choice on the Cycle tab"),
@@ -1531,6 +1755,8 @@ def main():
     s.add_argument("--no-refresh-lookup", action="store_true", help="use lookup.xlsx as it is (default: refreshed from the GPEI API first)")
     s.add_argument("--no-backup", action="store_true", help="do not read SharePoint, use the newest local backup")
     s.add_argument("--no-submissions", action="store_true", help="do not add the accepted submissions to this build")
+    s.add_argument("--no-auto-submissions", action="store_true", help="do not take the files of automatic rule 1 (setting submissions_auto)")
+    s.add_argument("--no-ledger-pull", action="store_true", help="do not read the decisions of the Operations Center first, use the ledger kept on this PC")
     s.add_argument("extra", nargs="*", help="extra options for the builder, after --")
     s = sub.add_parser("baseinfo", help=argparse.SUPPRESS); s.add_argument("path")
     s = sub.add_parser("check"); s.add_argument("--run", type=int, help="version number (default: the newest)")
@@ -1549,11 +1775,16 @@ def main():
     s.add_argument("--no-refresh-lookup", action="store_true")
     s.add_argument("--country")
     s = sub.add_parser("submissions", help="inspect the files the countries sent, accept or reject them (accepted ones go into the next build)")
-    s.add_argument("action", choices=["inspect", "list", "accept", "reject"])
+    s.add_argument("action", choices=["pull", "inspect", "list", "auto", "summary", "feedback", "pending", "accept", "reject"])
     s.add_argument("targets", nargs="*", help="accept / reject: the file name or the start of its content hash")
-    s.add_argument("--folder", help="inspect: the folder with the files (default: the submissions folder of the workspace)")
+    s.add_argument("--folder", help="inspect: the folder with the files (default: the submissions folder of the workspace, filled from SharePoint)")
+    s.add_argument("--no-pull", action="store_true", help="inspect: do not read the SharePoint folder first, use the local copy as it is; list: do not read the app's ledger")
+    s.add_argument("--local", action="store_true", help="accept / reject: decide on this PC only (normally decisions are made in the Operations Center)")
+    s.add_argument("--dry-run", action="store_true", help="pull: list what would be copied, write nothing")
     s.add_argument("--note", help="accept / reject: a note kept in the ledger"); s.add_argument("--by", help="who decides (default: the user name)")
     s.add_argument("--no-refresh-lookup", action="store_true")
+    s.add_argument("--close", action="store_true", help="pending: mark the given rounds ('COUNTRY|campaign|Round n') as closed: the round did not take place or no data are expected")
+    sub.add_parser("corrections", help="show what the corrections file (decided corrections) would change in the live file; nothing is changed")
     s = sub.add_parser("duplicates", help="list the duplicates of a file and what removing them would do (nothing is changed)")
     s.add_argument("--source", help="live (default), vNN build, bN backup version, or a file"); s.add_argument("--country")
     s.add_argument("--keep", choices=["complete", "first"], default="complete"); s.add_argument("--no-file", action="store_true")
@@ -1573,7 +1804,7 @@ def main():
           "excel": cmd_excel, "publish": cmd_publish, "dictionary": cmd_dictionary, "all": cmd_all, "commit": cmd_commit,
           "sync-scope": cmd_sync_scope, "doctor": cmd_doctor, "inspect": cmd_inspect, "find": cmd_find,
           "compare": cmd_compare, "rules": cmd_rules, "baseinfo": cmd_baseinfo, "duplicates": cmd_duplicates,
-          "submissions": cmd_submissions}[a.cmd]
+          "submissions": cmd_submissions, "corrections": cmd_corrections}[a.cmd]
     log("admin.py %s" % " ".join(sys.argv[1:]), quiet=True)
     try:
         fn(a)

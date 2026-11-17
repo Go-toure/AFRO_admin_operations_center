@@ -74,7 +74,18 @@ SECTIONS = [
                        "older campaign inside a file, a vaccine that differs from the lookup, coverage above the ceiling, new records that two "
                        "files both carry (sheet Overlap_between_files), and records that look like live records under another campaign name, "
                        "province name or date (possible duplicates, never added). Tally sheets, eTally files and call-in workbooks are read as "
-                       "checks against the live file."),
+                       "checks against the live file. Coverage above the ceiling is only listed (the live file has its own coverage columns), "
+                       "duplicates are removed, new records get the lookup's campaign name, round and planned date, and a record that is the same "
+                       "as a live one under another campaign name is matched, not added. Files that are clearly not admin data (IM, LQAS, AEFI, "
+                       "supplies, summaries) are labelled NOT ADMIN DATA; admin data in another template is never ignored. Records that fail a "
+                       "check are held back with their reason, never lost."),
+        ("Automatic rules", "four rules take what is safe without a decision: harmless findings only; findings the lookup confirms; the same "
+                            "findings as a file a person accepted before; and the clean records of any file that is not in the wrong folder or "
+                            "against the lookup's vaccine. A person's decision always wins."),
+        ("Feedback and pending data", "every inspection also writes a summary, the list of pending admin data (a lookup round with no data in "
+                                      "the live file 15 days after its start), and one workbook per country with what it has to correct, "
+                                      "confirm or send (a French sheet for the francophone countries). Download them in the Submissions tab; "
+                                      "sending them to the countries is a person's step."),
         ("2  Decide", "an operator accepts or rejects each file after reading the report. A blocked file cannot be accepted. The app remembers "
                       "the decisions: a file with the same name pattern as one decided before shows that decision, and a re-sent copy of a "
                       "rejected file with the same layout and number of rows is rejected again. Accepting a file whose campaign was not written in it "

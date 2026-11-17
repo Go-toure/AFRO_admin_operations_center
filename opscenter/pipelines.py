@@ -149,7 +149,7 @@ def step_build(ctx, dup="none"):
     ctx.ws.pull_light()
     ensure_inputs(ctx)
     if ctx.ws.pull_submissions():
-        ctx.emit("Reading the ledger of the submissions: the accepted files are added to this build.")
+        ctx.emit("Reading the ledger of the submissions: the accepted files and the files taken by the automatic rules are added to this build.")
     ctx.emit("Reading the backups of the live file (the reference for the repairs) ...")
     ctx.ws.pull_snapshots()
     try:

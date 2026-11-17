@@ -109,8 +109,8 @@ Every build also writes `Fix_list_by_country.xlsx`: what the build could not cor
 ### Submissions from the countries
 
 The folder `Admin_data_submissions` on SharePoint (link in the variable `OPS_SUBMISSIONS_SHARE_URL`) holds the files the countries
-send. The **Submissions** tab runs three things, all with the engine's `submissions.py` (the same command on the PC:
-`python admin.py submissions inspect | list | accept FILE | reject FILE`):
+send. The **Submissions** tab runs four things, all with the engine's `submissions.py` (the same command on the PC:
+`python admin.py submissions inspect | list | accept FILE | reject FILE | summary | feedback | pending`):
 
 1. **Inspect** reads every `.xlsx` / `.xlsm` / `.csv` of the folder (the folder is only read, never changed). It decides whether the
    file is in the template format (the 164 columns of the live file), or maps the columns when the headers can be recognised with
@@ -120,8 +120,21 @@ send. The **Submissions** tab runs three things, all with the engine's `submissi
    The result is `Submissions_report.xlsx`, the prepared records (`prepared/`) and the `ledger.json`, all kept in the `submissions/`
    folder of the AdminOps store.
 2. **Accept / Reject**: an operator decides per file; a blocked file cannot be accepted. The decision, who and the note are in the ledger.
-3. **Build** adds the records of the accepted files whose key is not yet in the live file, before the rules run. Nothing that is
-   already in the live file is changed by a submission; records with other figures are listed in the report for the country.
-   The Check step shows how many records were added.
+   Four automatic rules (setting `submissions_auto`, on by default) take what is safe without a decision: harmless findings only;
+   findings the lookup confirms; the same findings as a file a person accepted before; and the clean records of any file that is
+   not in the wrong folder or against the lookup's vaccine. A person's decision always wins. Records that fail a check are held
+   back with their reason (the "Held back" column), never lost.
+3. **Build** adds the records of the accepted files and of the files taken by the rules whose key is not yet in the live file,
+   before the rules run. Nothing that is already in the live file is changed by a submission; records with other figures are listed
+   in the report for the country. The Check step shows how many records were added.
+4. **Feedback and pending data**: every inspection also writes `Submissions_summary.xlsx`, `Pending_admin_data.xlsx` (a lookup
+   round with no data in the live file `pending_days` = 15 days after its start, from `pending_since` = 2025-01-01; sheets
+   Pending_now, Check_other_name, Date_differs_in_live, Received_not_in_live, Not_yet_due, Resolved, Closed) and one workbook per
+   country in `feedback_by_country` (a French sheet for the francophone countries). All can be downloaded from the tab; sending them
+   to the countries is a person's step. The pending register (`pending_register.json`) of the app is separate from the one on a PC.
+
+An optional `inputs/corrections.csv` in the AdminOps store holds corrections a person decided (columns Country, Province, District,
+Response, Round_Add, SIA_date, Column, Found, Restored, Reason, Decided_by, Decided_on); the build applies them and lists every
+change in the audit as "Decided correction". A cell changes only while it still holds the value in `Found`.
 
 Files stay where they are in the submissions folder; a changed or replaced file must be inspected again.

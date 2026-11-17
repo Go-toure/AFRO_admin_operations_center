@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import config
 
-SKIP_DIRS = {"out", "_backup_cache", "__pycache__"}
+SKIP_DIRS = {"out", "_backup_cache", "__pycache__", "_previous"}     # _previous: the country workbooks of an earlier inspection, kept on the PC only
 SKIP_SUFFIX = (".part", ".pkl", ".tmp")
 
 
@@ -81,6 +81,11 @@ class Workspace:
              "geo": str(self.inputs / "geo_reference.csv"), "submissions_dir": str(self.workspace / "submissions_in"),
              "district_source": str(self.inputs / ds) if ds else "",
              "build_extra_args": extra.get("build_extra_args", []), "max_row_drop_pct": float(extra.get("max_row_drop_pct", 2.0)),
+             # the same behaviour as the PC: the automatic rules of the submissions are on (a person's decision always wins), the pending-data rule
+             # (a lookup round with no data in the live file 15 days after its start), and the corrections a person decided (inputs/corrections.csv, optional)
+             "submissions_auto": bool(extra.get("submissions_auto", True)),
+             "pending_days": int(extra.get("pending_days", 15)), "pending_since": str(extra.get("pending_since", "2025-01-01")),
+             "corrections_file": str(self.inputs / "corrections.csv"),
              "excel_method": "python", "scope_script_dir": "", "scope_data_dir": ""}
         (self.engine / "admin_settings.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
 

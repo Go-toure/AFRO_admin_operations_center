@@ -501,8 +501,9 @@ def server(input, output, session):
             b = ui.input_action_button(btn_id, label, class_="btn-who" if primary else "btn-outline-secondary") if op or btn_id == "j_backup" else ui.span("operators only", class_="note")
             return ui.div(ui.h5(title), ui.p(text), b, class_="stepcard")
         sd = subs()
-        sub_note = ui.p(ui.strong("Submissions: "), "%d accepted file(s) will be added to the next build as new records." % sd["accepted"],
-                        class_="note") if sd and sd.get("configured") and sd.get("accepted") else ui.div()
+        sub_note = ui.p(ui.strong("Submissions: "), "%d accepted file(s) and %d file(s) taken by the automatic rules will be added to the next build as new records (%d clean new records; %d records are held back with a reason)." % (
+                        sd["accepted"], sd["by_rules"], sd["clean_new"], sd["held_back"]),
+                        class_="note") if sd and sd.get("configured") and (sd.get("accepted") or sd.get("by_rules")) else ui.div()
         return ui.div(
             ui.p("Every step runs on the server with the same engine as admin.py on the PC. Files are read from and saved to the "
                  "SharePoint folder, so nothing depends on this server staying up. Only one job runs at a time.", class_="note"),
@@ -539,16 +540,19 @@ def server(input, output, session):
             return ui.div(ui.p("The submissions folder is not connected. Set the variable OPS_SUBMISSIONS_SHARE_URL to the share link of the "
                                "Admin_data_submissions folder (see DEPLOY.md).", class_="note"), class_="stepcard")
         tiles = [tile("Files in the folder", str(d["in_folder"]), "%d not inspected yet" % len(d["not_inspected"]) if d["not_inspected"] else "all inspected"),
-                 tile("Waiting for a decision", str(d["waiting"]), "ready or to review"),
-                 tile("Accepted", str(d["accepted"]), "added to the next build"),
+                 tile("Waiting for a person", str(d["waiting"]), "files that no rule takes"),
+                 tile("Taken by rules or accepted", str(d["by_rules"] + d["accepted"]), "%d by the automatic rules; %d new clean records" % (d["by_rules"], d["clean_new"])),
+                 tile("Records held back", str(d["held_back"]), "with a reason, see the country feedback"),
+                 tile("Pending admin data", str(d["pending"][0]) if d.get("pending") else "-", ("rounds with nothing received 15 days after the start; %d to check" % d["pending"][1]) if d.get("pending") else "inspect to compute"),
                  tile("Changed since inspected", str(len(d["changed"])), "inspect again" if d["changed"] else "none")]
         report = ui.download_button("s_report", "Download the full report (xlsx)", class_="btn-outline-secondary") if d.get("report") else ui.span()
         decide_card = ui.div(
             ui.h5("2  Decide"),
-            ui.p("Open the report first: it lists, file by file, the layout found, every correction made to the values, the records that "
-                 "are new, the ones already in the live file (with other figures: listed, never changed), and the issues. An accepted file "
-                 "goes into the next Build as new records only; nothing that is already in the live file is changed. A blocked file cannot be "
-                 "accepted.", class_="note"),
+            ui.p("Four automatic rules already take what is safe (see the Rules tab): harmless findings only, findings the lookup confirms, the "
+                 "same findings as a file a person accepted before, and the clean records of any file that is not in the wrong folder or "
+                 "against the lookup's vaccine. Records that fail a check are held back with their reason. What is left is for you: open the report, "
+                 "then accept or reject. A person's decision always wins over the rules. An accepted file goes into the next Build as new "
+                 "records only; nothing that is already in the live file is changed. A blocked file cannot be accepted.", class_="note"),
             ui.input_select("s_file", "File", choices={r["id"]: "%s  (%s, %s)" % (r["File"], r["Status"], r["Decision"]) for r in d["rows"]}, width="100%"),
             ui.output_ui("s_why"),
             ui.input_text("s_note", "Note (optional, kept in the ledger)", width="100%"),
@@ -556,7 +560,7 @@ def server(input, output, session):
             ui.input_action_button("s_reject", "Reject", class_="btn-outline-danger", style="margin-left:8px;"),
             class_="stepcard") if op else ui.div(ui.p("Only operators accept or reject a file.", class_="note"))
         return ui.div(
-            ui.layout_columns(*tiles, col_widths=[3, 3, 3, 3]),
+            ui.layout_columns(*tiles, col_widths=[4, 4, 4, 4, 4, 4]),
             ui.div(ui.h5("1  Inspect"),
                    ui.p("Reads every file of the submissions folder (the folder itself is never changed), says whether it is in the template "
                         "format or which of its columns could be mapped with certainty, checks every record and value against what the live file "
@@ -564,6 +568,7 @@ def server(input, output, session):
                         class_="note"),
                    (ui.input_action_button("s_inspect", "Inspect the submissions", class_="btn-who") if op else ui.span("operators only", class_="note")),
                    ui.span(" "), report, class_="stepcard", style="margin-top:14px;"),
+            feedback_card(d),
             ui.h5("Files"),
             ui.output_data_frame("subs_table"),
             (ui.div(ui.h5("In the folder, not inspected yet", style="margin-top:14px;"), ui.output_data_frame("subs_new")) if d["not_inspected"] else ui.div()),
@@ -573,10 +578,32 @@ def server(input, output, session):
                  "Files stay where they are and a ledger in the SharePoint folder of the app keeps every decision.", class_="note"),
         )
 
+    def feedback_card(d):
+        """Downloads written by the last inspection: the summary, the pending admin data, and what each country has to correct or send."""
+        btns = []
+        if d.get("summary"):
+            btns.append(ui.download_button("s_summary", "Summary (xlsx)", class_="btn-outline-secondary"))
+        if d.get("pending_file"):
+            btns.append(ui.download_button("s_pending", "Pending admin data (xlsx)", class_="btn-outline-secondary"))
+        if d.get("feedback_all"):
+            btns.append(ui.download_button("s_fb_all", "Feedback, all countries (xlsx)", class_="btn-outline-secondary"))
+        country = ui.div()
+        if d.get("feedback"):
+            country = ui.div(ui.input_select("s_fb_file", "Workbook of one country, ready to send", choices=d["feedback"], width="100%"),
+                             ui.download_button("s_fb_one", "Download it", class_="btn-who"))
+        if not btns and not d.get("feedback"):
+            return ui.div()
+        return ui.div(ui.h5("3  Feedback to the countries and pending data"),
+                      ui.p("Written by every inspection, in plain words: what each country has to correct, confirm or send again (records held back, "
+                           "campaign names that differ, vaccine that differs from the lookup, sheets not read), and the rounds of the lookup whose admin data "
+                           "were not received 15 days after their start (pending admin data). The francophone countries get a French sheet. "
+                           "Sending the workbooks to the countries is a person's step; the app sends nothing.", class_="note"),
+                      ui.div(*[ui.span(b, style="margin-right:8px;") for b in btns]), country, class_="stepcard", style="margin-top:14px;")
+
     @render.data_frame
     def subs_table():
         d = subs()
-        cols = ["File", "Layout", "Status", "Decision", "Countries", "Records read", "New", "Already there", "Other figures", "Several units",
+        cols = ["File", "Layout", "Status", "Decision", "Countries", "Records read", "New", "Clean new", "Held back", "Already there", "Other figures", "Several units",
                 "Possible duplicates", "Also in another file", "Errors", "Warnings", "Left out", "Note"]
         rows = [{c: r[c] for c in cols} for r in (d or {}).get("rows", [])]
         return render.DataGrid(pd.DataFrame(rows, columns=cols), height="auto", width="100%")
@@ -603,6 +630,23 @@ def server(input, output, session):
     def s_report():
         p = get_ws().workspace / "submissions" / "Submissions_report.xlsx"
         yield p.read_bytes()
+
+    @render.download(filename="Submissions_summary.xlsx")
+    def s_summary():
+        yield (get_ws().workspace / "submissions" / "Submissions_summary.xlsx").read_bytes()
+
+    @render.download(filename="Pending_admin_data.xlsx")
+    def s_pending():
+        yield (get_ws().workspace / "submissions" / "Pending_admin_data.xlsx").read_bytes()
+
+    @render.download(filename="Feedback_to_countries.xlsx")
+    def s_fb_all():
+        yield (get_ws().workspace / "submissions" / "Feedback_to_countries.xlsx").read_bytes()
+
+    @render.download(filename=lambda: input.s_fb_file() or "Feedback.xlsx")
+    def s_fb_one():
+        name = Path(input.s_fb_file() or "").name            # a file name only, never a path
+        yield (get_ws().workspace / "submissions" / "feedback_by_country" / name).read_bytes()
 
     # ---------------------------------------------------------------- files and feedback
     @reactive.calc

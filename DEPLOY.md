@@ -95,6 +95,7 @@ Sign in at connect.posit.cloud, **Publish**, choose **Shiny**, pick the reposito
 | `OPS_DICT_SHARE_URL` | link of `AFRO_admin_data_dictionary.xlsx` (step 2) |
 | `OPS_SUBMISSIONS_SHARE_URL` (optional) | link of the SharePoint folder `Admin_data_submissions` where the countries put their files. The app only reads it; without it the Submissions tab says it is not connected |
 | `OPS_USERS` | the JSON of step 4 |
+| `inputs/ops_settings.json` keys (optional, in the store, not variables) | `submissions_auto` (true: the four automatic rules of the Submissions tab), `pending_days` (15) and `pending_since` ("2025-01-01") for the pending admin data. An optional `inputs/corrections.csv` in the store holds decided corrections that the build applies (see README) |
 | `OPS_MIN_BUILD_GB` | free memory needed to start a build. Default 5 (right for 8 GB or more); **3.3 on the Free plan (4 GB)**, tested |
 | `GPEI_API_TOKEN` | the same token as `GPEI_API_TOKEN` in the scope folder's `config/secrets.env` (poliogo.afro.who.int/dashboard/api/apitoken). With it, the lookup is refreshed from the GPEI API at the start of every build and inspect; without it the app uses the lookup that is in the folder and says so in the job log |
 | `OPS_KEEP_BACKUPS` (optional) | backups of the live file kept on SharePoint, default 3 |

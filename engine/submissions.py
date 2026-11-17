@@ -447,6 +447,134 @@ def live_spelling(ctx):
     return ctx._resp_spell
 
 
+WIRE_MAX_BACK = 60       # days: a record belongs to the previous planned campaign when that one started at most this long before (older: a round missing from the lookup is more likely)
+WIRE_MAX_LEAD = 21       # days: a campaign that ran earlier than planned (its first vaccination day before the planned start)
+
+
+def wire_by_date(lc, starts, ref, rn, offs):
+    """Which round of the lookup a record belongs to, from its date alone (a tally has no campaign name).
+    lc: the lookup rounds of the country (and vaccine) that may apply; starts: their planned start dates; ref: the date of the
+    records; rn: the round number the file gives (or None); offs: the numbering offsets of the live file.
+    Rule: a campaign keeps its PLANNED start date, also when it was conducted later; so data dated on or after a planned start belong to
+    that planned campaign until the next planned start, and data between two campaigns belong to the previous one (at most
+    WIRE_MAX_BACK days back). A campaign can also run EARLIER than planned: when the next planned start is at most WIRE_MAX_LEAD days
+    ahead and the previous campaign started longer ago than that, the next one is taken. When both are within WIRE_MAX_LEAD days there is
+    no safe answer. Only one campaign (Response + round) may start on the chosen date.
+    Returns (index of the lookup row, a text saying how) or None."""
+    if lc is None or not len(lc):
+        return None
+    if rn is not None:
+        def same_round(row):
+            if pd.isna(row["_rn"]):
+                return False
+            off = offs["by_campaign"].get(row["_rk"], offs["common"])
+            return int(row["_rn"]) + off == rn or int(row["_rn"]) == rn
+        lc = lc[lc.apply(same_round, axis=1)]
+        if lc.empty:
+            return None
+    st = starts.loc[lc.index]
+    delta = (st - ref).dt.days                     # < 0: the planned start is before the record
+    back, ahead = delta[delta <= 0], delta[delta > 0]
+    floor_d = back.max() if len(back) else None
+    next_d = ahead.min() if len(ahead) else None
+    gap = -int(floor_d) if floor_d is not None else None
+    lead = int(next_d) if next_d is not None else None
+
+    def one(d_):
+        rows = lc.loc[delta[delta == d_].index]
+        keys = list(dict.fromkeys(zip(rows["_rk"], rows["_rn"])))
+        return rows.index[0] if len(keys) == 1 else None
+    if gap == 0:
+        i = one(floor_d)
+        return (i, "the lookup round that starts on the date of the records") if i is not None else None
+    near_next = lead is not None and lead <= WIRE_MAX_LEAD
+    near_floor = gap is not None and gap <= WIRE_MAX_LEAD
+    if near_next and near_floor:
+        return None
+    if near_next:
+        i = one(next_d)
+        return (i, "the campaign ran %d day(s) before its planned start in the lookup" % lead) if i is not None else None
+    if gap is not None and gap <= WIRE_MAX_BACK:
+        i = one(floor_d)
+        return (i, "the records are dated %d day(s) after the planned start of the previous campaign in the lookup and before the next one" % gap) if i is not None else None
+    return None
+
+
+def wire_next_round(lc, starts, ref, rn, offs):
+    """The records say a round number (the round column, a hint, or the file name: 'Cycle_2') that the lookup does not have yet.
+    When the campaign that started last before the date of the records is the one whose LAST lookup round is rn - 1, and that round
+    started at most WIRE_MAX_BACK days before the records, the round exists but the lookup was not updated: the records are the next round
+    of the same campaign (same Response). Returns {'x': the lookup row of the last known round, 'last': its number, 'gap': days} or None."""
+    if lc is None or not len(lc) or rn is None:
+        return None
+    st = starts.loc[lc.index]
+    back = (ref - st).dt.days
+    before = back[back >= 0]
+    if before.empty:
+        return None
+    last_start = st.loc[before.idxmin()]
+    cand = lc.loc[before[before == before.min()].index]
+    rks = list(dict.fromkeys(cand["_rk"]))
+    if len(rks) != 1 or int(before.min()) > WIRE_MAX_BACK:
+        return None
+    rk = rks[0]
+    rows = lc[lc["_rk"] == rk]
+    off = offs["by_campaign"].get(rk, offs["common"])
+    nums = (rows["_rn"] + off).dropna().astype(int)
+    if nums.empty or rn != int(nums.max()) + 1:
+        return None
+    x = rows.loc[nums.idxmax()]
+    if pd.Timestamp(x["_d"]) > ref or int((ref - pd.Timestamp(x["_d"])).days) > WIRE_MAX_BACK:
+        return None
+    return {"x": x, "last": int(nums.max()), "gap": int((ref - pd.Timestamp(x["_d"])).days)}
+
+
+def standardize_to_lookup(P, ctx, notes):
+    """Records that name a campaign of the lookup but carry another date: the campaign keeps its PLANNED start date (the lookup's), also when it was
+    conducted earlier or later. Same country and same Response as the lookup, a date that is not a planned start of that Response, one safe answer
+    from wire_by_date (the round the file gives is respected): SIA_date becomes the planned start, an empty round is filled, the date in the file goes
+    in the notes. Returns the list of texts (one per country, Response and date), to confirm."""
+    out = []
+    lk = ctx.lookup
+    if lk is None or not {"Country", "Response", "SIA_date"} <= set(P.columns) or not len(P):
+        return out
+    b = ctx.builder
+    starts = pd.to_datetime(lk["_d"], errors="coerce")
+    offs = round_offsets(ctx)
+    ck = P["Country"].map(b._lkc)
+    rk = P["Response"].map(lambda x: b._rk(x) if not is_empty(x) else "")
+    ok = P["SIA_date"].notna() & (rk != "")
+    for (c, r_, d_), g in P[ok].groupby([ck[ok], rk[ok], P.loc[ok, "SIA_date"].dt.strftime("%Y-%m-%d")]):
+        lc = lk[(lk["_ck"] == c) & (lk["_rk"] == r_)]
+        if lc.empty or d_ in set(lc["_d"]):
+            continue
+        rns = {b._rnum(x) for x in g["Round_Add"] if not is_empty(x)} if "Round_Add" in g.columns else set()
+        rns.discard(None)
+        rn = next(iter(rns)) if len(rns) == 1 else None
+        if len(rns) > 1:
+            continue
+        try:
+            i = wire_by_date(lc, starts, pd.Timestamp(d_), rn, offs)
+        except Exception:
+            i = None
+        if not i:
+            continue
+        j, how = i
+        x = lk.loc[j]
+        new_d = pd.Timestamp(x["_d"])
+        if pd.isna(new_d):
+            continue
+        off = offs["by_campaign"].get(x["_rk"], offs["common"])
+        for k in g.index:
+            P.at[k, "SIA_date"] = new_d
+            notes.add(rowref(P, k), "SIA_date", d_, new_d.strftime("%Y-%m-%d"), "planned start date of the lookup kept (%s)" % how)
+            if "Round_Add" in P.columns and is_empty(P.at[k, "Round_Add"]) and not pd.isna(x["_rn"]):
+                P.at[k, "Round_Add"] = "Rnd%d" % (int(x["_rn"]) + off)
+                notes.add(rowref(P, k), "Round_Add", "", P.at[k, "Round_Add"], "round of the lookup")
+        out.append("%s %s: %d record(s) dated %s now carry the planned start %s (%s)" % (x["OBR Name"], x["Round Number"], len(g), d_, new_d.strftime("%Y-%m-%d"), how))
+    return out
+
+
 def infer_campaign(P, ctx, prof, hints, notes):
     """Records without a Response: find the campaign in the lookup from what the file does say (country, SIA_date, round, vaccine; or, with no
     date, the date / round / vaccine written in the file name). Only a unique answer is used, and it is always reported for the operator to
@@ -534,46 +662,75 @@ def infer_campaign(P, ctx, prof, hints, notes):
             t0, t1, src = pd.Timestamp(hints["year"], 1, 1), pd.Timestamp(hints["year"], 12, 31), "the year in the file name"
         else:
             continue
-        lc = lc[(starts.loc[lc.index] >= t0) & (starts.loc[lc.index] <= t1)]
-        if rn is not None and len(lc):
-            def same_round(row):
-                if pd.isna(row["_rn"]):
-                    return False
-                off = offs["by_campaign"].get(row["_rk"], offs["common"])
-                return int(row["_rn"]) + off == rn or int(row["_rn"]) == rn
-            lc = lc[lc.apply(same_round, axis=1)]
-        if lc.empty:
-            continue
-        keys = list(dict.fromkeys(zip(lc["_rk"], lc["_rn"])))
-        if len(keys) != 1:
-            if ref is None:
+        try:
+            wired = wire_by_date(lc, starts, ref, rn, offs) if (d_ and ref is not None) else None
+        except Exception:
+            wired = None            # the earlier inference (window and nearest round) then decides, as before
+        nxt = None
+        if wired is None and d_ and ref is not None and rn is not None:
+            try:
+                nxt = wire_next_round(lc, starts, ref, rn, offs)
+            except Exception:
+                nxt = None
+        if nxt is not None:
+            lc, src = lc.loc[[nxt["x"].name]], "the date of the records"
+        elif wired is not None:
+            lc, src = lc.loc[[wired[0]]], "the date of the records: " + wired[1]
+        else:
+            lc = lc[(starts.loc[lc.index] >= t0) & (starts.loc[lc.index] <= t1)]
+            if rn is not None and len(lc):
+                def same_round(row):
+                    if pd.isna(row["_rn"]):
+                        return False
+                    off = offs["by_campaign"].get(row["_rk"], offs["common"])
+                    return int(row["_rn"]) + off == rn or int(row["_rn"]) == rn
+                lc = lc[lc.apply(same_round, axis=1)]
+            if lc.empty:
                 continue
-            dd = (starts.loc[lc.index] - ref).dt.days.abs().sort_values()
-            if len(dd) > 1 and dd.iloc[1] - dd.iloc[0] >= 20:
-                lc = lc.loc[[dd.index[0]]]
-            else:
-                continue
+            keys = list(dict.fromkeys(zip(lc["_rk"], lc["_rn"])))
+            if len(keys) != 1:
+                if ref is None:
+                    continue
+                dd = (starts.loc[lc.index] - ref).dt.days.abs().sort_values()
+                if len(dd) > 1 and dd.iloc[1] - dd.iloc[0] >= 20:
+                    lc = lc.loc[[dd.index[0]]]
+                else:
+                    continue
         x = lc.iloc[0]
         rk = x["_rk"]
         name = spell.get(rk) or x["OBR Name"]
         off = offs["by_campaign"].get(rk, offs["common"])
         why = "campaign inferred: %s %s (starts %s) in the lookup, from %s%s" % (x["OBR Name"], x["Round Number"], x["Round Start Date"], src, vnote)
+        rname_out = x["Round Number"]
+        if nxt is not None:
+            rname_out = "Round %d" % rn
+            why = ("round %d of %s is not in the lookup yet (the lookup has rounds up to %d, the last starting %s): taken as the next round of "
+                   "the same campaign, with the date of the records%s" % (rn, x["OBR Name"], nxt["last"], x["Round Start Date"], vnote))
+            gl = getattr(ctx, "_lookup_gaps", None)
+            if gl is None:
+                gl = ctx._lookup_gaps = []
+            gl.append({"Country": x["Country"], "Response": name, "Round_missing_in_lookup": rn, "Date_in_the_data": d_,
+                       "Last_round_in_lookup": nxt["last"], "Last_round_start": x["Round Start Date"], "Records": len(g)})
         vt = None
         if "Vaccines" in lk.columns and not is_empty(x.get("Vaccines")):
             vt = vmap.get(cn(x["Vaccines"]))
         for i in g.index:
             P.at[i, "Response"] = name
             notes.add(rowref(P, i), "Response", "", name, why)
-            if is_empty(P.at[i, "Round_Add"]) and not pd.isna(x["_rn"]):
-                P.at[i, "Round_Add"] = "Rnd%d" % (int(x["_rn"]) + off)
+            if is_empty(P.at[i, "Round_Add"]) and (nxt is not None or not pd.isna(x["_rn"])):
+                P.at[i, "Round_Add"] = "Rnd%d" % (rn if nxt is not None else int(x["_rn"]) + off)
                 notes.add(rowref(P, i), "Round_Add", "", P.at[i, "Round_Add"], why)
             if pd.isna(P.at[i, "SIA_date"]):
                 P.at[i, "SIA_date"] = pd.Timestamp(x["_d"])
                 notes.add(rowref(P, i), "SIA_date", "", x["_d"], why)
+            elif wired is not None and pd.Timestamp(P.at[i, "SIA_date"]).normalize() != pd.Timestamp(x["_d"]).normalize():
+                old_d = pd.Timestamp(P.at[i, "SIA_date"]).strftime("%Y-%m-%d")
+                P.at[i, "SIA_date"] = pd.Timestamp(x["_d"])          # the planned date of the lookup is kept (the file's own date is in the note)
+                notes.add(rowref(P, i), "SIA_date", old_d, x["_d"], why + "; the planned start of the lookup is kept, the file says " + old_d)
             if is_empty(P.at[i, "Vaccine_type"]) and vt:
                 P.at[i, "Vaccine_type"] = vt
                 notes.add(rowref(P, i), "Vaccine_type", "", vt, why)
-        out.append("%s %s (%d record(s); from %s%s)" % (name, x["Round Number"], len(g), src, vnote))
+        out.append("%s %s (%d record(s); from %s%s)" % (name, rname_out, len(g), src + ("; round not in the lookup yet" if nxt is not None else ""), vnote))
     return out
 
 
@@ -1211,7 +1368,9 @@ def prepare_file(path, ctx, prof, template_cols, folder_country=None):
     except Exception as e:
         kind_ = guess_kind(path, None)
         damaged = isinstance(e, (AssertionError, IndexError)) and str(path).lower().endswith(".xls")
-        s["why"] = ("looks like %s, not admin data; " % kind_ if kind_ else "") + (
+        if kind_:
+            s["codes"] = ["not_admin"]
+        s["why"] = ("NOT ADMIN DATA: looks like %s; " % kind_ if kind_ else "") + (
             "the old .xls file is damaged (its list of texts is cut; open it in Excel and save it again as .xlsx if it matters)" if damaged
             else "the file could not be opened (%s)" % type(e).__name__)
         det["layout"] = {"class": "not readable", "map": {}, "synonym": [], "ignored": [], "missing_keys": [], "notes": [str(e)[:200]]}
@@ -1221,7 +1380,11 @@ def prepare_file(path, ctx, prof, template_cols, folder_country=None):
     s["sheet"] = ", ".join(str(x) for x in ([lay["sheet"]] + [L["sheet"] for L in lay.get("extra") or []]) if x is not None)
     if lay["class"] == "not usable":
         kind = guess_kind(path, lay)
-        s["why"] = ("looks like %s, not admin data; " % kind if kind else "") + "; ".join(lay["notes"])
+        if kind:
+            s["codes"] = ["not_admin"]
+            s["why"] = "NOT ADMIN DATA: looks like %s; %s" % (kind, "; ".join(lay["notes"]))
+        else:
+            s["why"] = "different layout from the AFRO template, not read (admin data in another template is kept visible, never ignored): " + "; ".join(lay["notes"])
         return s, None, det
     raw = et_raw if et_raw is not None else read_records(path, lay)
     s["rows_read"] = len(raw)
@@ -1360,6 +1523,7 @@ def prepare_file(path, ctx, prof, template_cols, folder_country=None):
             out.append(x)
         P[c] = pd.Series(out, index=P.index, dtype=float)
     det["bad_numbers"] = pd.DataFrame(bad_num)
+    s["bad_cols"] = dict(Counter(b_["Column"] for b_ in bad_num).most_common(12))
     # eTally has no target population: the latest one of the same LGA in the live file
     if lay.get("etally"):
         pops, nfill = population_from_live(ctx), 0
@@ -1420,6 +1584,12 @@ def prepare_file(path, ctx, prof, template_cols, folder_country=None):
                     notes.add(rowref(P, i), "Round_Add", "", P.at[i, "Round_Add"], "round taken from the lookup (country, campaign, start date); " + how)
         except Exception as e:
             det.setdefault("warnings", []).append("Round filling from the lookup failed: %s" % e)
+    # a named campaign of the lookup with another date than its planned start: the planned start is kept (the file's date goes in the notes)
+    if ctx.lookup is not None:
+        try:
+            det["date_std"] = standardize_to_lookup(P, ctx, notes)
+        except Exception as e:
+            det.setdefault("warnings", []).append("Standardising the dates with the lookup failed: %s" % e)
     # still no Response: look for the campaign in the lookup from what the file says (date, round, vaccine, file name)
     try:
         det["facility"] = subdistrict_check(P, ctx, notes)
@@ -1513,7 +1683,14 @@ def prepare_file(path, ctx, prof, template_cols, folder_country=None):
     s["existing_same"] = int((cmp_["Status"] == "already in the live file, same figures").sum())
     s["existing_different"] = int((cmp_["Status"] == "already in the live file, other figures").sum())
     s["existing_units"] = int(cmp_["Status"].str.startswith("same names as several").sum())
-    s["possible_dup"] = int(cmp_["Status"].str.startswith("possible duplicate").sum())
+    # a record with the same place and the same figures as a live record of another name, round or date is a duplicate: it is removed (never added)
+    s["aliases"] = []
+    if "Live_campaign" in cmp_.columns and (cmp_["Live_campaign"] != "").any():
+        al = cmp_[cmp_["Live_campaign"] != ""].assign(_rs=lambda d: d["Response"].astype(str), _ro=lambda d: d["Round_Add"].astype(str))
+        for (rs_, ro_, ls_, lo_), g in al.groupby(["_rs", "_ro", "Live_campaign", "Live_round"]):
+            s["aliases"].append({"file_name": rs_, "file_round": ro_, "live_name": ls_, "live_round": lo_, "records": int(len(g))})
+    s["dup_removed"] = int(cmp_["Status"].str.startswith("possible duplicate: same figures").sum())
+    s["possible_dup"] = int(cmp_["Status"].str.startswith("possible duplicate").sum()) - s["dup_removed"]
     # derived columns and the live file's constants
     yr = P["SIA_date"].dt.year.astype(float)
     mo = P["SIA_date"].dt.month.astype(float)
@@ -1561,7 +1738,7 @@ def prepare_file(path, ctx, prof, template_cols, folder_country=None):
     det["issues"] = quality_issues(P, ctx, prof)
     iss = det["issues"]
     s["qc_errors"] = int(iss.loc[iss["severity"] == "Error", "Excel_row"].nunique()) if len(iss) else 0
-    s["qc_warnings"] = int(iss.loc[iss["severity"] == "Warning", "Excel_row"].nunique()) if len(iss) else 0
+    s["qc_warnings"] = int(iss.loc[(iss["severity"] == "Warning") & ~iss["check"].isin(["coverage_ceiling", "coverage_high"]), "Excel_row"].nunique()) if len(iss) else 0
     # campaigns against the lookup
     if ctx.lookup is not None:
         try:
@@ -1569,38 +1746,53 @@ def prepare_file(path, ctx, prof, template_cols, folder_country=None):
             det["campaigns"] = rep
         except Exception:
             det["campaigns"] = None
-    # the verdict
-    reasons = []
+    # the verdict (every finding also has a code, kept in the ledger: the automatic rules read the codes, never the text)
+    reasons, codes, infos = [], [], []
     if s["excluded"]:
-        reasons.append("%d row(s) left out" % s["excluded"])
+        reasons.append("%d row(s) left out" % s["excluded"]); codes.append("left_out")
     if s["qc_errors"]:
-        reasons.append("%d record(s) with an Error" % s["qc_errors"])
+        reasons.append("%d record(s) with an Error" % s["qc_errors"]); codes.append("error")
     if s["existing_different"]:
-        reasons.append("%d record(s) already in the live file with other figures (not changed)" % s["existing_different"])
+        reasons.append("%d record(s) already in the live file with other figures (not changed)" % s["existing_different"]); codes.append("other_figures")
     if s["existing_units"]:
-        reasons.append("%d record(s) with the same names as several live records and none identical (not added)" % s["existing_units"])
+        reasons.append("%d record(s) with the same names as several live records and none identical (not added)" % s["existing_units"]); codes.append("several_units")
+    if s.get("aliases"):
+        infos.append("records matched to a live record under another campaign name or round (the live record is kept as it is): " +
+                     "; ".join("%s %s -> %s %s (%d)" % (a_["file_name"], a_["file_round"], a_["live_name"], a_["live_round"], a_["records"]) for a_ in s["aliases"][:4]))
+    if s.get("dup_removed"):
+        infos.append("%d duplicate record(s) removed (same place and figures as a live record under another campaign name, round or date): see the Records sheet" % s["dup_removed"])
+    for m_ in det.get("date_std", []) or []:
+        reasons.append("date standardised to the lookup (please confirm): " + m_); codes.append("date_standardized")
     if s.get("possible_dup"):
+        codes.append("possible_dup")
         reasons.append("%d record(s) that look like live records under another campaign name, round or date (not added): see the Records sheet" % s["possible_dup"])
     for m_ in det.get("date_check", {}).get("fixed", []):
-        reasons.append("year of the date corrected (please confirm): " + m_)
+        reasons.append("year of the date corrected (please confirm): " + m_); codes.append("year_fixed")
     for m_ in det.get("date_check", {}).get("far", []):
-        reasons.append(m_ + ": check")
+        reasons.append(m_ + ": check"); codes.append("date_far")
     for m_ in det.get("older", []):
-        reasons.append(m_)
+        reasons.append(m_); codes.append("older_campaign")
     for m_ in det.get("vaccine_check", []):
-        reasons.append("vaccine against the lookup: " + m_)
+        reasons.append("vaccine against the lookup: " + m_); codes.append("vaccine_vs_lookup")
     if lay["class"] != "template":
-        reasons.append("layout: " + lay["class"])
+        reasons.append("layout: " + lay["class"]); codes.append("layout_mapped" if str(lay["class"]).startswith("mapped") else ("etally" if lay.get("etally") else "layout_other"))
     if det.get("from_live"):
+        codes.append("campaign_from_live")
         reasons.append("campaign details taken from the live file (same place and number vaccinated), not written in the file (please confirm): " + "; ".join(det["from_live"][:3]))
     if det.get("filled_down"):
+        codes.append("campaign_filled_down")
         reasons.append("campaign filled down inside the sheet, not written in those lines (please confirm): " + "; ".join(det["filled_down"][:3]))
     if det.get("inferred"):
+        codes.append("campaign_inferred")
+        if any("round not in the lookup yet" in str(m_) for m_ in det["inferred"]):
+            codes.append("campaign_next_round")    # the lookup has no such round: a person confirms, and the lookup needs the round
+        if any("planned start of the previous campaign" in str(m_) for m_ in det["inferred"]):
+            codes.append("campaign_by_floor")      # dated after a planned start, before the next one: it can be a round the lookup does not have: a person confirms
         reasons.append("campaign details taken from the lookup / the file name, not written in the file (please confirm): " + "; ".join(det["inferred"][:3]))
     if lay.get("etally"):
-        reasons.append("; ".join(lay["notes"][:1]))
+        reasons.append("; ".join(lay["notes"][:1])); codes.append("etally")
     if det.get("callin_summary"):
-        reasons.append(det["callin_summary"])
+        reasons.append(det["callin_summary"]); codes.append("callin")
     # a file that is mostly another country's records than the folder it is in is in the wrong place
     if folder_country and len(P) >= 10:
         oc = P["Country"].map(lambda v: v != folder_country)
@@ -1608,39 +1800,86 @@ def prepare_file(path, ctx, prof, template_cols, folder_country=None):
             top_c = P.loc[oc, "Country"].value_counts()
             hint = ("; the records are of %s: move the file to that folder" % top_c.index[0]) if len(top_c) and top_c.iat[0] >= 0.8 * int(oc.sum()) and len(P) < 50 else "; not usable, delete it from the folder"
             reasons.insert(0, "WRONG FILE OR WRONG FOLDER: %d of %d records are of other countries than the folder (%s)%s" % (int(oc.sum()), len(P), folder_country, hint))
-            s["wrong_place"] = True
+            s["wrong_place"] = True; codes.append("wrong_place")
     if lay.get("skipped_sheets"):
+        codes.append("sheets_skipped")
         reasons.append("sheet(s) with column names but not usable, not read: %s" % ", ".join(str(x) for x in lay["skipped_sheets"]))
     if folder_country and len(P):
         other = P["Country"].map(lambda v: v != folder_country)
         if other.any():
             others = P.loc[other, "Country"].value_counts().head(3)
+            codes.append("other_country")
             reasons.append("%d record(s) of another country than the folder (%s): %s" % (
                 int(other.sum()), folder_country, ", ".join("%s %d" % (k, v) for k, v in others.items())))
     if len(det["unseen"]):
-        reasons.append("values never seen in the live file")
+        reasons.append("values never seen in the live file"); codes.append("unseen")
     if det["bad_numbers"] is not None and len(det["bad_numbers"]):
+        codes.append("non_numbers")
         reasons.append("%d cell(s) that are not numbers" % len(det["bad_numbers"]))
     if len(iss) and "check" in iss.columns:
         nc_ = int(iss.loc[iss["check"] == "coverage_ceiling", "Excel_row"].nunique())
-        if nc_:
-            reasons.append("%d record(s) with coverage above the ceiling (more vaccinated than the target allows): check the figures with the country" % nc_)
+        s["coverage_ceiling"] = nc_
+        if nc_:       # for reference only: the live file has its own coverage columns, a high coverage never stops a record
+            infos.append("%d record(s) with coverage above the ceiling (kept; for reference)" % nc_)
     if s["qc_warnings"] > 0.25 * s["rows_used"]:
-        reasons.append("more than 25% of the records have a warning")
+        reasons.append("more than 25% of the records have a warning"); codes.append("warnings")
     if s["new"] == 0:
-        reasons.append("no new record")
+        reasons.append("no new record"); codes.append("no_new")
+    s["codes"] = codes
+    # the lookup as evidence: every campaign round of the file is a round of the lookup (same country, campaign, date and round)
+    s["lookup_rounds"], s["lookup_ok"] = 0, 0
+    try:
+        cp = det.get("campaigns")
+        if cp is not None and len(cp):
+            s["lookup_rounds"], s["lookup_ok"] = int(len(cp)), int(cp["Status"].eq("OK").sum())
+    except Exception:
+        pass                    # no evidence: the rule then simply does not apply
     s["status"] = "ready" if not reasons else "review"
     if s.get("wrong_place"):
         s["status"] = "blocked"
     if not s.get("wrong_place") and (reasons == ["no new record"] or (s["new"] == 0 and not s["qc_errors"] and not s["existing_different"] and not s["existing_units"] and not s.get("possible_dup"))):
         s["status"] = "nothing new"
-    s["why"] = "; ".join(reasons)
+    s["why"] = "; ".join(reasons + (["for reference: " + "; ".join(infos)] if infos else []))
     if det.get("facility"):
         s["status"], s["why"] = "nothing new", det["facility"]["message"] + ("; " + s["why"] if s["why"] else "")
     if not hasattr(ctx, "_file_records"):
         ctx._file_records = {}
     ctx._file_records[s["hash"]] = (name, P[[c for c in ("Country", "Province", "District", "SIA_date", "Round_Add", "Vaccine_type", "Response", "TotalNbrVaccPolio", "PopPolio") if c in P.columns]].copy())
-    P = P[(cmp_["Status"] == "new").values]                 # only the records the live file does not have go to the build
+    # nothing is lost: every record that is not a duplicate goes in; a record that fails a validation is held back with its reason (list: Held_back_records)
+    err_rows = {}
+    if len(iss) and "severity" in iss.columns:
+        for _, r_ in iss[iss["severity"] == "Error"].iterrows():
+            err_rows.setdefault(r_["Excel_row"], []).append(str(r_.get("check_label") or r_.get("check")))
+    # a record is held for a text where a figure of the target or of the children vaccinated should be; text in a calculated column (coverage, wastage,
+    # proportions, which the build recalculates, or an age-group label) does not hold it (a #DIV/0! of the country's own formulas, for example)
+    core_ = {"TotPop", "PopPolio", "TotalNbrVaccPolio", "Tot_Vacc_nOPV2", "Total_Vacc_bOPV"}
+    bn_ = det["bad_numbers"]
+    bad_rows = set(bn_.loc[bn_["Column"].isin(core_), "Row_in_file"]) if bn_ is not None and len(bn_) else set()
+    hold = []
+    for i in range(len(P)):
+        r_ = []
+        rr_ = rowref(P, i)
+        if rr_ in err_rows:
+            r_.append("validation error: " + ", ".join(sorted(set(err_rows[rr_]))))
+        if rr_ in bad_rows:
+            r_.append("the target or the number vaccinated is not a number")
+        miss = [c for c in ("Country", "Province", "District", "SIA_date", "Round_Add", "Response", "Vaccine_type") if c in P.columns and
+                (pd.isna(P.at[i, c]) if c == "SIA_date" else is_empty(P.at[i, c]))]
+        if miss:
+            r_.append("missing after standardising: " + ", ".join(miss))
+        if folder_country and P.at[i, "Country"] != folder_country:
+            r_.append("record of another country than the folder")
+        hold.append("; ".join(r_))
+    hold = np.array(hold, dtype=object)
+    isnew = (cmp_["Status"] == "new").values
+    other = cmp_["Status"].str.startswith("possible duplicate: same place") | cmp_["Status"].str.startswith("same names as several")
+    ho = P[other.values].drop(columns=["_src_row", "_sheet"])[template_cols].copy()
+    ho["Hold_reason"] = (cmp_.loc[other.values, "Status"] + ": " + cmp_.loc[other.values, "Note"].astype(str)).values
+    det["hold"] = hold[isnew]
+    det["held_other"] = ho
+    s["clean_new"] = int((hold[isnew] == "").sum())
+    s["held_new"] = int((hold[isnew] != "").sum()) + len(ho)
+    P = P[isnew]                 # only the records the live file does not have go to the build
     P = P.drop(columns=["_src_row", "_sheet"])
     P = P[template_cols]
     return s, P, det
@@ -1739,21 +1978,27 @@ def overlap_between_files(details, out_root, rows, ledger, log=print):
         for k, f in zip(keys[~blank], figs[~blank]):
             seen.setdefault(k, (h, f))
         tot = sum(v[0] for v in cnt.values())
-        s["overlap"] = tot
+        same_tot = sum(v[1] for v in cnt.values())
+        s["overlap"] = tot - same_tot          # a copy with the same figures is a duplicate: the build keeps one, nobody needs to look
+        s["overlap_same"] = same_tot
         for h2, (n, same) in cnt.items():
             parts.append({"File": s["name"], "Also_in_earlier_file": details[h2][0]["name"], "New_records_in_both": n, "Same_figures": same, "Other_figures": n - same})
         if tot:
             msg = "%d of its %d new record(s) are also new in %s (the build keeps the first accepted copy)" % (
                 tot, s["new"], "; ".join("%s (%d)" % (details[h2][0]["name"], v[0]) for h2, v in sorted(cnt.items(), key=lambda kv: -kv[1][0])[:3]))
+            if s["overlap"] == 0:
+                msg = "for reference: " + msg.replace("(the build keeps the first accepted copy)", "(same figures: duplicates, the build keeps one)")
             s["why"] = (s["why"] + "; " if s["why"] else "") + msg
-            if s["status"] == "ready":
+            if s["status"] == "ready" and s["overlap"]:
                 s["status"] = "review"
             for r in rows:
                 if r.get("hash") == h:
                     r["why"], r["status"] = s["why"], s["status"]
             if h in ledger["files"]:
                 ledger["files"][h]["why"], ledger["files"][h]["status"] = s["why"], s["status"]
-                ledger["files"][h]["overlap"] = tot
+                ledger["files"][h]["overlap"] = s["overlap"]
+                if s["overlap"]:
+                    ledger["files"][h]["codes"] = list(ledger["files"][h].get("codes") or []) + ["overlap"]
             det["_overlap_msg"] = msg
     return pd.DataFrame(parts)
 
@@ -1810,6 +2055,23 @@ def vaccine_family(b):
     return lambda v: frozenset(b._vset(v)) or frozenset({cn(v)}) if isinstance(v, str) and v.strip() else frozenset()
 
 
+def lookup_round_at(ctx, response, country, date):
+    """The round number (numbered as the live file does) that the lookup gives for this campaign and country on this date (3 days of tolerance), or None."""
+    lk, b = getattr(ctx, "lookup", None), ctx.builder
+    if lk is None or is_empty(response) or is_empty(country) or pd.isna(date):
+        return None
+    e = lk[(lk["_ck"] == b._lkc(country)) & (lk["_rk"] == b._rk(response))]
+    if e.empty:
+        return None
+    d = (pd.to_datetime(e["_d"], errors="coerce") - pd.Timestamp(date)).abs().dt.days
+    e = e[d <= 3]
+    rn = list(dict.fromkeys(e["_rn"].dropna()))
+    if len(rn) != 1:
+        return None
+    offs = round_offsets(ctx)
+    return int(rn[0]) + offs["by_campaign"].get(e.iloc[0]["_rk"], offs["common"])
+
+
 def compare_with_live(P, ctx, prof):
     b = ctx.builder
     T = to_text(P.drop(columns=["_src_row", "_sheet"]), prof["numeric"])
@@ -1817,6 +2079,7 @@ def compare_with_live(P, ctx, prof):
     rows, diffs = [], []
     cols = [c for c in FIGURE_COLS + ["Date_Report"] if c in P.columns]
     for i in range(len(P)):
+        alias = None
         k = key.iat[i]
         cand = ctx.live_index.get(k)
         if not cand:
@@ -1826,6 +2089,19 @@ def compare_with_live(P, ctx, prof):
             # the same campaign and round at the same place, only the date, the province or the vaccine name differs: it is the live record
             same_c = [h for h in pl if (not is_empty(P.at[i, "Response"])) and str(h[5]).strip().lower() == str(P.at[i, "Response"]).strip().lower()
                       and str(h[6]).strip().lower() == str(P.at[i, "Round_Add"]).strip().lower()] if pl else []
+            aligned = False
+            # the same place on the same date (3 days at most) with the same vaccine, and only one such live record: it is that live record under another
+            # campaign name or round (CAM-2025-11-01 for CAM-2026-01, NOPV2 for bOPV-nOPV2, Rnd3 for Rnd1); the live record is not changed
+            if len(same_c) != 1 and pl and not pd.isna(P.at[i, "SIA_date"]):
+                fam0 = vaccine_family(b)(P.at[i, "Vaccine_type"])
+                cand = [h for h in pl if fam0 and h[2] and (fam0 & h[2]) and abs((pd.Timestamp(P.at[i, "SIA_date"]) - h[1]).days) <= 3]
+                if len(cand) == 1:
+                    ro_f, ro_l = P.at[i, "Round_Add"], cand[0][6]
+                    same_r = (not is_empty(ro_f)) and str(ro_f).strip().lower() == str(ro_l).strip().lower()
+                    # a round that differs is accepted only when the file's round is not a round at all (a date, Rnd0 typed for none), or when the lookup
+                    # gives the live record's round for this campaign and date: otherwise it may be another round, and the record is held, never dropped
+                    if same_r or is_empty(ro_f) or b._rnum(str(ro_f)) is None or lookup_round_at(ctx, P.at[i, "Response"], P.at[i, "Country"], P.at[i, "SIA_date"]) == b._rnum(str(ro_l)):
+                        same_c, aligned = cand, True
             if len(same_c) == 1:
                 lab, d_, v, tt, po, rs, ro = same_c[0]
                 tot = P.at[i, "TotalNbrVaccPolio"] if "TotalNbrVaccPolio" in P.columns else np.nan
@@ -1839,6 +2115,10 @@ def compare_with_live(P, ctx, prof):
                 st = "already in the live file, other figures" if dif else "already in the live file, same figures"
                 note = "live row %d: same place, campaign and round (%s %s); the date, province or vaccine name differs%s" % (
                     lab + 2, rs, ro, "" if pd.isna(dt_) or abs((pd.Timestamp(dt_) - d_).days) == 0 else " (file %s, live %s)" % (pd.Timestamp(dt_).strftime("%Y-%m-%d"), d_.strftime("%Y-%m-%d")))
+                if aligned:
+                    note = "live row %d: same place, date and vaccine; the campaign name or round differs (file %s %s, live %s %s)" % (
+                        lab + 2, P.at[i, "Response"], P.at[i, "Round_Add"], rs, ro)
+                    alias = (str(P.at[i, "Response"]), str(P.at[i, "Round_Add"]), str(rs), str(ro))
                 for c_, lv, sv in dif:
                     diffs.append({"Row_in_file": rowref(P, i), "Country": P.at[i, "Country"], "District": P.at[i, "District"],
                                   "SIA_date": "" if pd.isna(dt_) else pd.Timestamp(dt_).strftime("%Y-%m-%d"), "Response": P.at[i, "Response"],
@@ -1898,7 +2178,7 @@ def compare_with_live(P, ctx, prof):
         rows.append({"Row_in_file": rowref(P, i), "Country": P.at[i, "Country"], "Province": P.at[i, "Province"],
                      "District": P.at[i, "District"], "SIA_date": P.at[i, "SIA_date"].strftime("%Y-%m-%d"),
                      "Round_Add": P.at[i, "Round_Add"], "Vaccine_type": P.at[i, "Vaccine_type"], "Response": P.at[i, "Response"],
-                     "Status": st, "Note": note})
+                     "Status": st, "Note": note, "Live_campaign": alias[2] if alias else "", "Live_round": alias[3] if alias else ""})
     return pd.DataFrame(rows), pd.DataFrame(diffs)
 
 
@@ -2007,6 +2287,18 @@ def inspect_folder(ctx, folder, out_root, template_cols, log=print):
         if P is not None:
             prepared = "prepared/%s.xlsx" % h[:12]
             P.to_excel(out_root / prepared, sheet_name="Sheet1", index=False)
+        clean_p, clean_n, held_n = None, 0, 0
+        if P is not None and det.get("hold") is not None and len(det["hold"]) == len(P):
+            hold_ = pd.Series(det["hold"], index=P.index)
+            Pc = P[hold_ == ""]
+            Ph = pd.concat([P[hold_ != ""].assign(Hold_reason=hold_[hold_ != ""]), det["held_other"]], ignore_index=True)
+            if len(Pc):
+                clean_p = "prepared/%s_clean.xlsx" % h[:12]
+                Pc.to_excel(out_root / clean_p, sheet_name="Sheet1", index=False)
+            clean_n, held_n = len(Pc), len(Ph)
+            det["held_all"] = Ph
+            if len(Ph):
+                Ph.to_excel(out_root / ("prepared/%s_held.xlsx" % h[:12]), sheet_name="Sheet1", index=False)
         e = old or {"decision": None, "decided_by": "", "decided_at": "", "note": "", "first_seen": now}
         stem_ = name_stem(Path(rel).name)
         if not e.get("decision"):
@@ -2025,8 +2317,10 @@ def inspect_folder(ctx, folder, out_root, template_cols, log=print):
         e.update({k: s[k] for k in ("name", "path", "size", "hash", "layout", "rows_read", "rows_used", "excluded", "new", "existing_same",
                                     "existing_different", "existing_units", "qc_errors", "qc_warnings", "countries", "status", "why")})
         e["possible_dup"] = s.get("possible_dup", 0)
+        e["codes"], e["lookup_rounds"], e["lookup_ok"] = s.get("codes"), s.get("lookup_rounds", 0), s.get("lookup_ok", 0)
         e["stem"], e["country_folder"] = stem_, fc or ""
-        e.update({"prepared": prepared, "last_inspected": now, "present": True})
+        e.update({"prepared": prepared, "last_inspected": now, "present": True, "prepared_clean": clean_p, "clean_new": clean_n, "held_new": held_n,
+                  "aliases": s.get("aliases", []), "bad_cols": s.get("bad_cols", {})})
         ledger["files"][h] = e
         rows.append(dict(s, decision=e["decision"] or "", decided_by=e["decided_by"]))
         details[h] = (s, det)
@@ -2070,11 +2364,11 @@ def inspect_folder(ctx, folder, out_root, template_cols, log=print):
 def write_report(path, rows, details, ctx, not_read=()):
     ov = pd.DataFrame(rows)
     cols = ["name", "path", "status", "decision", "layout", "countries", "rows_read", "rows_used", "excluded", "new", "existing_same",
-            "existing_different", "existing_units", "possible_dup", "in_file_duplicates_removed", "qc_errors", "qc_warnings", "why", "hash"]
+            "existing_different", "existing_units", "possible_dup", "in_file_duplicates_removed", "clean_new", "held_new", "qc_errors", "qc_warnings", "why", "hash"]
     ov = ov[[c for c in cols if c in ov.columns]].rename(columns={"name": "File", "path": "Path", "status": "Status", "decision": "Decision",
         "layout": "Layout", "countries": "Countries", "rows_read": "Rows read", "rows_used": "Rows used", "excluded": "Rows left out",
         "new": "New records", "existing_same": "Already there (same)", "existing_different": "Already there (other figures)", "existing_units": "Same names as several live records (not added)", "possible_dup": "Possible duplicates (not added)",
-        "in_file_duplicates_removed": "Exact copies removed", "qc_errors": "Records with an Error", "qc_warnings": "Records with a Warning",
+        "in_file_duplicates_removed": "Exact copies removed", "clean_new": "Clean new records (go in)", "held_new": "Held back (see Held_back_records)", "qc_errors": "Records with an Error", "qc_warnings": "Records with a Warning",
         "why": "Why not ready", "hash": "Content hash"})
     sheets = {"Overview": ov}
 
@@ -2116,8 +2410,11 @@ def write_report(path, rows, details, ctx, not_read=()):
             rows_h.append({"Header": x, "In files": len(c["files"]), "Example file": sorted(c["files"])[0],
                            "Closest template column": tcols[near[0]] if near else "", "To teach it": '"%s": "%s"' % (x, tcols[near[0]]) if near else ""})
         sheets["Headers_to_learn"] = pd.DataFrame(rows_h)
+    gaps = getattr(ctx, "_lookup_gaps", None)
+    if gaps:
+        sheets["Lookup_gaps"] = pd.DataFrame(gaps).drop_duplicates()
     for name, key in (("Campaign_to_set", "to_set"), ("eTally_vs_callin", "callin_check"), ("Tally_check", "tally_check"), ("Records", "compare"), ("Differences_with_live", "diffs"), ("Issues", "issues"), ("Normalised_summary", "note_counts"),
-                      ("Normalised_cells", "notes"), ("Defaults_from_live", "defaults"), ("Left_out", "excluded_df"), ("Not_numbers", "bad_numbers"),
+                      ("Normalised_cells", "notes"), ("Defaults_from_live", "defaults"), ("Held_back_records", "held_all"), ("Left_out", "excluded_df"), ("Not_numbers", "bad_numbers"),
                       ("Values_not_seen", "unseen"), ("Duplicates_in_file", "dups"), ("Campaigns_vs_lookup", "campaigns")):
         if key == "excluded_df":
             parts = []
@@ -2276,8 +2573,669 @@ def learn_campaign(out_root, e):
     return " (campaign details kept in campaign_hints.json: %s)" % ", ".join("%s %s" % (k, v) for k, v in hint.items())
 
 
-def accepted_files(out_root):
-    """Prepared record files of the accepted files: [(name, path)]."""
+# ------------------------------------------------------------------------------------------------ automatic rule 1
+# A file nobody has decided on is taken into a build by itself ONLY when everything the inspection found about it is on this list:
+# findings about records that are already in the live file (which no submission ever changes) or about the layout, never about
+# the new records themselves. Anything else (an Error, a date far from the campaign, a campaign guessed from the live file or the
+# file name, values never seen, numbers that are not numbers, a coverage above the ceiling, a possible duplicate, records
+# that are also new in another file, an eTally conversion ...) stays for a person. A decision of a person always wins.
+AUTO_RULE = "automatic rule 1"
+AUTO_INFO = ("row(s) left out",
+             "already in the live file with other figures (not changed)",
+             "layout: mapped (headers differ)",
+             "of the records have a warning")
+
+
+def auto_reasons_ok(why):
+    """True when every finding in 'why' is one of the harmless ones above."""
+    parts = [x.strip() for x in (why or "").split("; ") if x.strip()]
+    return all(any(t in x for t in AUTO_INFO) for x in parts)
+
+
+# Automatic rule 2 (needs the codes of an inspection made by this version): the same, and when EVERY campaign round of the file is a
+# round of the lookup (same country, campaign, date and round) and the vaccine agrees with the lookup, a campaign that the file did not
+# write but the lookup gave, a year typed wrongly that the lookup's date confirms, and an eTally export added up by LGA are harmless too.
+AUTO_CODES = {"left_out", "other_figures", "layout_mapped", "warnings"}
+AUTO_CODES_LOOKUP = {"campaign_inferred", "year_fixed", "etally", "date_standardized"}
+
+
+def auto_codes_ok(e):
+    """None when the ledger entry has no codes (an older inspection: use the text rule), else True / False."""
+    codes = e.get("codes")
+    if codes is None:
+        return None
+    ok = set(AUTO_CODES)
+    lk = int(e.get("lookup_rounds") or 0)
+    if lk and int(e.get("lookup_ok") or 0) == lk and "vaccine_vs_lookup" not in codes:
+        ok |= AUTO_CODES_LOOKUP
+    return all(c in ok for c in codes)
+
+
+# Automatic rule 3, the engine learns from the people: a file with the same name pattern, in the same country folder and with the same layout as a file
+# that a PERSON accepted is accepted again, when it shows no kind of finding that the accepted one did not show and none of the HARD ones.
+AUTO_HARD = {"error", "several_units", "possible_dup", "overlap", "wrong_place", "other_country", "non_numbers", "vaccine_vs_lookup", "sheets_skipped"}
+
+
+def precedent_for(e, ledger):
+    """The newest earlier file accepted by a person that this entry repeats (same pattern, folder and layout, no new kind of finding), or None."""
+    codes = e.get("codes")
+    if codes is None or not e.get("stem") or set(codes) & AUTO_HARD or e.get("overlap"):
+        return None
+    for p in earlier_decisions(ledger, None, e.get("stem"), e.get("country_folder")):
+        who = str(p.get("decided_by") or "")
+        if p.get("decision") != "accepted" or who.startswith("engine") or p.get("layout") != e.get("layout"):
+            continue
+        if set(codes) <= (set(p.get("codes") or []) | AUTO_CODES | AUTO_CODES_LOOKUP):
+            return p
+    return None
+
+
+def auto_candidates(out_root, ledger=None):
+    """[(name, path, note)] of the files rule 1 takes into the build: not decided by a person, not blocked, not replaced by a newer
+    version, still in the folder, with new records, no Error, no record with several live units, no possible duplicate, no overlap
+    with another file, and only the harmless findings of AUTO_INFO."""
+    ledger = ledger or load_ledger(out_root)
+    out = []
+    for h, e in ledger["files"].items():
+        if e.get("decision") or e.get("superseded") or not e.get("present", True) or e.get("status") in ("blocked", "nothing new"):
+            continue
+        if not e.get("prepared") or (e.get("new") or 0) <= 0:
+            continue
+        if e.get("qc_errors") or e.get("existing_units") or e.get("possible_dup") or e.get("overlap"):
+            continue
+        by_codes = auto_codes_ok(e)
+        prec = precedent_for(e, ledger) if by_codes is False else None
+        if prec is not None:
+            p = Path(out_root) / e["prepared"]
+            if p.is_file():
+                out.append((e["name"], str(p), "%s: %d new record(s), the same kind of file as '%s', accepted by %s on %s" % (
+                    AUTO_RULE, int(e.get("new") or 0), str(prec.get("name"))[:40], prec.get("decided_by") or "?", str(prec.get("decided_at") or "")[:10])))
+            continue
+        if by_codes is False or (by_codes is None and not auto_reasons_ok(e.get("why"))):
+            continue
+        lk = int(e.get("lookup_rounds") or 0)
+        how = "only harmless findings"
+        if by_codes and lk and int(e.get("lookup_ok") or 0) == lk and set(e.get("codes") or []) & AUTO_CODES_LOOKUP:
+            how = "campaign confirmed by the lookup (%d of %d round(s))" % (int(e["lookup_ok"]), lk)
+        p = Path(out_root) / e["prepared"]
+        if p.is_file():
+            out.append((e["name"], str(p), "%s: %d new record(s), %s" % (AUTO_RULE, int(e.get("new") or 0), how)))
+    taken = {e.get("prepared") for e in ledger["files"].values() if any(Path(pp).name == Path(str(e.get("prepared"))).name for _, pp, _ in out)}
+    out += auto_clean_candidates(out_root, ledger, taken)
+    return out
+
+
+AUTO_RULE4 = "automatic rule 4"
+AUTO_HARD4 = {"wrong_place", "vaccine_vs_lookup"}
+
+
+def auto_clean_candidates(out_root, ledger, taken):
+    """Rule 4, nothing is lost: of a file that no rule takes whole, the records that passed every validation and the standardisation and are not duplicates
+    (file prepared/<hash>_clean.xlsx) go in; the others are held back with their reason (Held_back_records). Never a file a person decided, never a file in the
+    wrong folder or with a vaccine that disagrees with the lookup (the whole file waits for a person)."""
+    out = []
+    for h, e in ledger["files"].items():
+        if e.get("decision") or e.get("superseded") or not e.get("present", True) or e.get("status") in ("blocked", "nothing new"):
+            continue
+        if e.get("prepared") in taken or not e.get("prepared_clean") or int(e.get("clean_new") or 0) <= 0:
+            continue
+        codes = e.get("codes")
+        if codes is None or set(codes) & AUTO_HARD4:
+            continue
+        p = Path(out_root) / e["prepared_clean"]
+        if p.is_file():
+            out.append((e["name"], str(p), "%s: %d clean new record(s) (validated, standardised, not duplicates); %d held back, see Held_back_records" % (
+                AUTO_RULE4, int(e["clean_new"]), int(e.get("held_new") or 0))))
+    return out
+
+
+CODE_MEANING = {
+    "not_admin": ("a file that is not admin data (IM, LQAS, AEFI, supplies, call-in, summaries)", "nobody: ignored"),
+    "overlap": ("the new records are also new in another file", "engine: a copy with the same figures is harmless; other figures need a person"),
+    "coverage_ceiling": ("records with more vaccinated than the target allows (reference only, no longer stops a file)", "nobody: the live file has its own coverage columns"),
+    "date_standardized": ("records given the planned start date of the lookup for their campaign", "the engine when the lookup confirms it"),
+    "possible_dup": ("records that look like live records under another campaign name, round or date", "a person"),
+    "unseen": ("names or values never seen in the live file", "a person (new spelling or new area)"),
+    "campaign_from_live": ("campaign details taken from the live file, not written in the file", "a person, once (remembered)"),
+    "campaign_inferred": ("campaign taken from the lookup / the file name", "the engine when the lookup confirms it"),
+    "campaign_by_floor": ("dated after a planned start, before the next one", "a person, once (remembered)"),
+    "campaign_next_round": ("round missing from the lookup, taken as the next round of the same campaign", "a person, and the lookup needs the round"),
+    "error": ("records with an Error", "the country"),
+    "several_units": ("same names as several live records, none identical", "a person"),
+    "sheets_skipped": ("a sheet with column names that could not be read", "the country or a person"),
+    "non_numbers": ("cells that are not numbers", "the country"),
+    "year_fixed": ("year of a date corrected", "the engine when the lookup confirms it"),
+    "date_far": ("a date far from the campaign", "a person"),
+    "older_campaign": ("records of an older campaign inside the file", "a person"),
+    "etally": ("eTally export added up by LGA", "the engine when the lookup confirms the campaign"),
+    "callin": ("eTally compared with the call-in workbook", "a person"),
+    "layout_other": ("a layout that is not the template", "a person"),
+    "vaccine_vs_lookup": ("the vaccine differs from the lookup", "the country or a person"),
+    "other_country": ("records of another country than the folder", "a person"),
+    "wrong_place": ("a file in the wrong folder", "move or delete the file"),
+}
+
+
+def blockers_of(e):
+    """The kinds of finding that keep a file from an automatic decision, in plain words: [code]. None when the entry has no codes (inspect again)."""
+    codes = e.get("codes")
+    if codes is None:
+        return None
+    ok = set(AUTO_CODES)
+    lk = int(e.get("lookup_rounds") or 0)
+    if lk and int(e.get("lookup_ok") or 0) == lk and "vaccine_vs_lookup" not in codes:
+        ok |= AUTO_CODES_LOOKUP
+    out = [c for c in dict.fromkeys(codes) if c not in ok and c not in ("no_new",)]
+    if e.get("overlap") and "overlap" not in out:
+        out.append("overlap")
+    return out
+
+
+def summary(out_root, audit=None):
+    """What a person would otherwise work out by hand: where the new records are, what keeps them from going in by themselves, who can fix it,
+    and which rounds of the lookup that have no data in the live file are in a submitted file. Returns {sheet: DataFrame}."""
+    ledger = load_ledger(out_root)
+    auto_notes = {n: note for n, _, note in auto_candidates(out_root, ledger)}
+    auto = set(auto_notes)
+    rows = []
+    for h, e in ledger["files"].items():
+        if not e.get("present", True) or e.get("superseded") or (e.get("new") or 0) <= 0:
+            continue
+        bl = blockers_of(e)
+        rows.append({"File": e["name"], "Country": e.get("country_folder") or "", "New": int(e["new"]), "Status": e.get("status"),
+                     "Decision": e.get("decision") or "", "Auto": e["name"] in auto, "Blockers": bl,
+                     "Auto_new": (int(e.get("clean_new") or 0) if str(auto_notes.get(e["name"], "")).startswith(AUTO_RULE4) else int(e["new"])) if e["name"] in auto else 0,
+                     "Held_back": int(e.get("held_new") or 0)})
+    f = pd.DataFrame(rows)
+    out = {}
+    if len(f):
+        f["Blocker_list"] = f["Blockers"].map(lambda b: "inspect again (no codes)" if b is None else ", ".join(b))
+        bl_rows = []
+        for code in sorted({c for b in f["Blockers"] if b for c in b}):
+            sel = f[f["Blockers"].map(lambda b: bool(b) and code in b) & ~f["Auto"] & (f["Decision"] == "")]
+            m = CODE_MEANING.get(code, (code, "a person"))
+            bl_rows.append({"Finding": code, "Meaning": m[0], "Who can fix it": m[1], "Files": len(sel), "New_records_affected": int(sel["New"].sum())})
+        out["Blockers"] = pd.DataFrame(bl_rows).sort_values("New_records_affected", ascending=False) if bl_rows else pd.DataFrame()
+        g = []
+        for c, d in f.groupby("Country"):
+            todo = d[~d["Auto"] & (d["Decision"] == "")]
+            top = pd.Series([x for b in todo["Blockers"] if b for x in b]).value_counts()
+            g.append({"Country": c, "Files_with_new_records": len(d), "New_records": int(d["New"].sum()), "Taken_by_rules": int(d["Auto_new"].sum()), "Held_back_records": int(d["Held_back"].sum()),
+                      "Decided": int(d.loc[d["Decision"] != "", "New"].sum()), "Waiting_for_a_person": int((d["New"] - d["Auto_new"])[d["Decision"] == ""].sum()),
+                      "Main_finding": top.index[0] if len(top) else ""})
+        out["By_country"] = pd.DataFrame(g).sort_values("New_records", ascending=False)
+        out["Files"] = f.drop(columns=["Blockers"]).sort_values(["Country", "New"], ascending=[True, False])
+    # lookup rounds without data in the live file, found in a submitted file?
+    rep = Path(out_root) / "Submissions_report.xlsx"
+    if audit and Path(audit).is_file() and rep.is_file():
+        try:
+            nd = pd.read_excel(audit, sheet_name="Lookup_no_data")
+            cv = pd.read_excel(rep, sheet_name="Campaigns_vs_lookup")
+        except Exception:
+            nd, cv = None, None
+        if nd is not None and len(nd):
+            def rk(x):
+                return re.sub(r"[^a-z0-9]", "", str(x).lower())
+            def rnum(x):
+                m = re.search(r"(\d+)", str(x))
+                return int(m.group(1)) if m else None
+            cv = cv.assign(_k=cv["Response"].map(rk), _ld=pd.to_datetime(cv["Lookup_start_date"].astype(str).str[:10], errors="coerce"))
+            st = {e["name"]: e for e in ledger["files"].values()}
+            rec = []
+            for _, r in nd.iterrows():
+                _sd = pd.to_datetime(str(r["Round Start Date"])[:10], errors="coerce")
+                hit = cv[(cv["_k"] == rk(r["OBR Name"])) & cv["_ld"].notna() & ((cv["_ld"] - _sd).abs().dt.days <= 7)]
+                files = [x for x in hit["File"].dropna().unique() if x in st and st[x].get("present", True) and not st[x].get("superseded")]
+                n_new = max([int(st[x].get("new") or 0) for x in files] or [0])
+                rec.append({"Country": r["Country"], "Campaign": r["OBR Name"], "Round": r["Round Number"], "Planned_start": str(r["Round Start Date"])[:10],
+                            "In_a_submitted_file": bool(files), "Files": "; ".join(files[:3]), "New_records_in_best_file": n_new,
+                            "Next_step": ("the file brings new records: decide it" if n_new else ("the file has the records but all are in the live file or held back: see its findings" if files else "not in any submitted file: ask the country"))})
+            r_ = pd.DataFrame(rec)
+            r_["_d"] = r_["Planned_start"]
+            out["Missing_rounds"] = r_[r_["_d"] >= "2025-01-01"].sort_values(["Country", "_d"]).drop(columns="_d")
+    return out
+
+
+def writable(path, log=print):
+    """The path itself, or the same name with the time added when the file is locked (open in Excel): a report is never lost because it was open."""
+    p = Path(path)
+    try:
+        with open(p, "ab"):
+            pass
+        return p
+    except PermissionError:
+        alt = p.with_name("%s_%s%s" % (p.stem, dt.datetime.now().strftime("%H%M%S"), p.suffix))
+        log("NOTE: %s is open in another program (Excel?): written as %s instead; close it and run again to replace it." % (p.name, alt.name))
+        return alt
+    except OSError:
+        return p
+
+
+PENDING_DAYS = 15
+
+
+def _pkey(country, campaign, rnd):
+    return "%s|%s|%s" % (str(country).strip().upper(), str(campaign).strip(), str(rnd).strip())
+
+
+def pending(out_root, nodata, days=PENDING_DAYS, since="2025-01-01", today=None, update=True, source="", live=None, near_days=10, near_min=5):
+    """PENDING ADMIN DATA. A lookup round whose admin data are not in the live file `days` days after its start (15 by default) is marked pending, so the
+    data can be followed until they arrive. `nodata` is the table 'lookup rounds with no records in the data' (builder.lookup_crosscheck(live, lookup)[1]:
+    Country, OBR Name, Round Number, Vaccines, Round Start Date, Round Status, Response_in_data).
+    What is pending is told apart: nothing received at all (ask the country), or received in a submitted file but not in the live file yet (a decision, the build or a
+    correction is what is missing). A register (pending_register.json) keeps the date each round was first flagged, when it was resolved (the data
+    arrived in the live file) and the rounds a person closed (the round did not take place); it is the follow-up list. Rounds that started before `since` are
+    kept in a reference sheet, they are old gaps and not pending. With `live` (the live file) a round of a country that has live records within `near_days` days of the
+    planned start (at least `near_min`, 5) is not asked of the country: the data may be there under another campaign name or date, so it goes to the sheet Check_other_name (a person aligns
+    the names), never to the country's list. Returns {sheet name: DataFrame}."""
+    out_root = Path(out_root)
+    near = {}
+    if live is not None and len(live) and {"Country", "SIA_date"} <= set(live.columns):
+        ld = pd.to_datetime(live["SIA_date"].astype(str).str[:10], errors="coerce")
+        for c_, g_ in pd.DataFrame({"c": live["Country"].astype(str).str.strip().str.upper(), "d": ld}).dropna().groupby("c"):
+            near[c_] = np.sort(g_["d"].values.astype("datetime64[D]"))
+    today = pd.Timestamp(today) if today else pd.Timestamp(dt.date.today())
+    reg_path = out_root / "pending_register.json"
+    try:
+        reg = json.loads(reg_path.read_text(encoding="utf-8")) if reg_path.is_file() else {}
+    except Exception:
+        reg = {}
+    reg.setdefault("rounds", {})
+    ledger = load_ledger(out_root)
+    st = {e["name"]: e for e in ledger["files"].values()}
+    rep = out_root / "Submissions_report.xlsx"
+    cv = None
+    if rep.is_file():
+        try:
+            cv = pd.read_excel(rep, sheet_name="Campaigns_vs_lookup")
+        except Exception:
+            cv = None
+
+    def rk(x):
+        return re.sub(r"[^a-z0-9]", "", str(x).lower())
+
+    def rnum(x):
+        m = re.search(r"(\d+)", str(x))
+        return int(m.group(1)) if m else None
+    if cv is not None and len(cv):
+        # a file is matched to a lookup round by the lookup date of its records, not by the round number the file writes (the live file may number rounds
+        # differently from the lookup: a file that says Round 3 on 6 October is the lookup's Round 1)
+        cv = cv.assign(_k=cv["Response"].map(rk), _ld=pd.to_datetime(cv["Lookup_start_date"].astype(str).str[:10], errors="coerce"))
+    inlive = {}      # (campaign, round number) -> dates of the live records: the same round at another date (a typo in the month or the day)
+    if live is not None and len(live) and {"Response", "Round_Add", "SIA_date"} <= set(live.columns):
+        _d = pd.to_datetime(live["SIA_date"].astype(str).str[:10], errors="coerce")
+        for a_, b_, d_ in zip(live["Response"], live["Round_Add"], _d):
+            if not pd.isna(d_):
+                inlive.setdefault((rk(a_), rnum(b_)), set()).add(d_)
+    rows, old, notyet = [], [], []
+    for _, r in (nodata if nodata is not None else pd.DataFrame()).iterrows():
+        start = pd.to_datetime(str(r["Round Start Date"])[:10], errors="coerce")
+        if pd.isna(start):
+            continue
+        key = _pkey(r["Country"], r["OBR Name"], r["Round Number"])
+        base = {"Country": str(r["Country"]).strip().upper(), "Campaign": r["OBR Name"], "Round": r["Round Number"], "Vaccines": r.get("Vaccines", ""),
+                "Planned_start": start.strftime("%Y-%m-%d"), "Due_date": (start + pd.Timedelta(days=days)).strftime("%Y-%m-%d"),
+                "Live_file": "campaign is in the live file under other dates" if str(r.get("Response_in_data", "")).startswith("yes") else "no records of this campaign"}
+        if start < pd.Timestamp(since):
+            old.append(dict(base, Days_since_start=int((today - start).days)))
+            continue
+        if start + pd.Timedelta(days=days) > today:
+            notyet.append(dict(base, Days_to_due=int((start + pd.Timedelta(days=days) - today).days)))
+            continue
+        files, n_new = [], 0
+        if cv is not None and len(cv):
+            hit = cv[(cv["_k"] == rk(r["OBR Name"])) & cv["_ld"].notna() & ((cv["_ld"] - start).abs().dt.days <= 7)]
+            files = [x for x in hit["File"].dropna().unique() if x in st and st[x].get("present", True) and not st[x].get("superseded")]
+            n_new = max([int(st[x].get("new") or 0) for x in files] or [0])
+        n_near = 0
+        if near.get(base["Country"]) is not None:
+            arr = near[base["Country"]]
+            n_near = int(((arr >= np.datetime64(start.date() - pd.Timedelta(days=near_days).to_pytimedelta())) & (arr <= np.datetime64(start.date() + pd.Timedelta(days=near_days).to_pytimedelta()))).sum())
+        if any(abs((d_ - start).days) <= 35 for d_ in inlive.get((rk(r["OBR Name"]), rnum(r["Round Number"])), ())):
+            status, nxt = "In the live file under another date", ("The live file has this campaign and round, but not at the lookup's planned start date (%s): check the date of the live records "
+                                                                  "(a typo in the date is the usual cause); a submitted file may carry other figures for it" % start.strftime("%Y-%m-%d"))
+        elif not files and n_near >= near_min:
+            status, nxt = "Check: live records of the country near the start date", ("The live file has %d record(s) of this country within %d days of the planned start: the data may be there under another campaign name or date; "
+                                                                                      "align the name (python admin.py find --country ... --date ...) before asking the country" % (n_near, near_days))
+        elif not files:
+            status, nxt = "Pending: nothing received", "Ask the country for the admin data of this round (AFRO template), or for confirmation that the round did not take place"
+        elif n_new:
+            status, nxt = "Received, not in the live file yet", "A submitted file has new records of this round: they go in with the next build (automatic rules or a decision in the Operations Center)"
+        else:
+            status, nxt = "Received, not in the live file yet", "A submitted file has records of this round but none can be added now (held back or already there under another name): see the country's feedback"
+        age = int((today - start).days)
+        rows.append(dict(base, Days_since_start=age, Days_overdue=age - days, Age_group=("15-30 days" if age <= 30 else "31-90 days" if age <= 90 else "over 90 days"),
+                         Status=status, Live_records_near_start=n_near, Files="; ".join(files[:3]), New_records_in_best_file=n_new, Next_step=nxt, _key=key))
+    cur = pd.DataFrame(rows)
+    # the register: first flagged, resolved, closed
+    now = today.strftime("%Y-%m-%d")
+    seen = set(cur["_key"]) if len(cur) else set()
+    if update:
+        for k in seen:
+            e = reg["rounds"].setdefault(k, {"first_flagged": now})
+            e["last_seen"] = now
+            e.pop("resolved", None)
+        for k, e in reg["rounds"].items():
+            if k not in seen and not e.get("resolved") and not e.get("closed"):
+                e["resolved"] = now
+        reg["updated"] = now
+        reg["source"] = source
+        reg["days"] = days
+        reg_path.write_text(json.dumps(reg, indent=1, ensure_ascii=False), encoding="utf-8")
+    if len(cur):
+        cur["First_flagged"] = cur["_key"].map(lambda k: reg["rounds"].get(k, {}).get("first_flagged", now))
+        cur["_closed"] = cur["_key"].map(lambda k: bool(reg["rounds"].get(k, {}).get("closed")))
+    out = {}
+    cols = ["Country", "Campaign", "Round", "Vaccines", "Planned_start", "Due_date", "Days_since_start", "Days_overdue", "Age_group", "Status", "Live_file",
+            "Live_records_near_start", "First_flagged", "Files", "New_records_in_best_file", "Next_step"]
+    live_ = cur[~cur["_closed"]] if len(cur) else cur
+    pend = live_[live_["Status"] == "Pending: nothing received"] if len(live_) else live_
+    chk = live_[live_["Status"].str.startswith("Check:")] if len(live_) else live_
+    dd = live_[live_["Status"].str.startswith("In the live file")] if len(live_) else live_
+    recv = live_[live_["Status"].str.startswith("Received")] if len(live_) else live_
+    out["Pending_now"] = pend[cols].sort_values(["Country", "Planned_start"]) if len(pend) else pd.DataFrame(columns=cols)
+    out["Date_differs_in_live"] = dd[cols].sort_values(["Country", "Planned_start"]) if len(dd) else pd.DataFrame(columns=cols)
+    out["Check_other_name"] = chk[cols].sort_values(["Country", "Planned_start"]) if len(chk) else pd.DataFrame(columns=cols)
+    out["Received_not_in_live"] = recv[cols].sort_values(["Country", "Planned_start"]) if len(recv) else pd.DataFrame(columns=cols)
+    out["By_country"] = (pend.groupby("Country").agg(Rounds_pending=("Campaign", "size"), Oldest_start=("Planned_start", "min"), Max_days_since_start=("Days_since_start", "max"))
+                         .reset_index().sort_values("Rounds_pending", ascending=False)) if len(pend) else pd.DataFrame(columns=["Country", "Rounds_pending", "Oldest_start", "Max_days_since_start"])
+    res = [{"Round": k, "First_flagged": e.get("first_flagged"), "Resolved_on": e.get("resolved")} for k, e in reg["rounds"].items() if e.get("resolved")]
+    out["Resolved"] = pd.DataFrame(res, columns=["Round", "First_flagged", "Resolved_on"])
+    clo = [{"Round": k, "Closed_on": e["closed"].get("on"), "By": e["closed"].get("by"), "Note": e["closed"].get("note")} for k, e in reg["rounds"].items() if e.get("closed")]
+    out["Closed"] = pd.DataFrame(clo, columns=["Round", "Closed_on", "By", "Note"])
+    out["Not_yet_due"] = pd.DataFrame(notyet).sort_values("Planned_start") if notyet else pd.DataFrame(columns=["Country", "Campaign", "Round", "Planned_start", "Due_date", "Days_to_due"])
+    out["Older_rounds_no_data"] = pd.DataFrame(old).sort_values(["Country", "Planned_start"]) if old else pd.DataFrame(columns=["Country", "Campaign", "Round", "Planned_start"])
+    out = {"Read_me": pd.DataFrame({"Pending admin data": [
+        "A round of the lookup (GPEI) is PENDING when its admin data are not in the live file %d days after its planned start date (checked on %s, rounds that started on or after %s)." % (days, now, since),
+        "Pending_now: nothing received for the round, in no submitted file, and no live record of the country near its start date: ask the country. Date_differs_in_live: the live file has the campaign and round but at another date than the lookup (a person corrects the date). Check_other_name: nothing received, but the live file has records of the country near the start date (the round may be there under another campaign name or date): a person checks and aligns before the country is asked. Received_not_in_live: a submitted file holds records of the round, they are not in the live file yet (next build, a decision, or a correction by the country).",
+        "Not_yet_due: rounds that started less than %d days ago, to watch. Older_rounds_no_data: rounds before %s with no data, kept for reference. Resolved: the data arrived in the live file. Closed: a person said the round did not take place or is not expected." % (days, since),
+        "First_flagged is the date the engine first saw the round pending (pending_register.json, kept in the workspace). To close a round: python admin.py submissions pending --close \"COUNTRY|campaign|Round n\" --note \"why\".",
+        "Source of the live and lookup rounds: %s." % (source or "the last inspection")]}), **out}
+    return out
+
+
+def pending_close(out_root, targets, note="", by=""):
+    """Mark pending rounds as closed (the round did not take place, or no data are expected). A target is a piece of 'COUNTRY|campaign|Round n' (not case sensitive);
+    it must match exactly one round of the register. Returns [(target, message)]."""
+    out_root = Path(out_root)
+    reg_path = out_root / "pending_register.json"
+    reg = json.loads(reg_path.read_text(encoding="utf-8")) if reg_path.is_file() else {"rounds": {}}
+    res = []
+    for t in targets:
+        hits = [k for k in reg["rounds"] if t.lower() in k.lower()]
+        if len(hits) != 1:
+            res.append((t, "NOT DONE: %s" % ("no pending round matches (run 'submissions pending' first)" if not hits else "%d rounds match, be more precise: %s" % (len(hits), "; ".join(hits[:4])))))
+            continue
+        reg["rounds"][hits[0]]["closed"] = {"on": dt.datetime.now().strftime("%Y-%m-%d"), "by": by, "note": note}
+        res.append((t, "closed: %s" % hits[0]))
+    reg_path.write_text(json.dumps(reg, indent=1, ensure_ascii=False), encoding="utf-8")
+    return res
+
+
+FR_MATTER = {"target population missing": "population cible manquante", "failed a check": "contrôle non satisfait", "empty fields": "champs vides",
+             "text instead of numbers": "texte à la place de nombres", "other country": "autre pays", "unit not clear": "unité pas claire",
+             "same place and date, other figures": "même lieu et même date, autres chiffres", "campaign name differs": "nom de campagne différent",
+             "round differs": "round différent", "vaccine differs from the lookup": "vaccin différent du lookup", "wrong folder": "mauvais dossier",
+             "sheet not read": "feuille non lue", "error values in calculated columns": "valeurs en erreur dans des colonnes calculées",
+             "data not received": "données non reçues"}
+
+
+def _top(series, n=3):
+    vc = series.dropna().astype(str).value_counts().head(n)
+    return ", ".join("%s %d" % (k, v) for k, v in vc.items())
+
+
+def feedback(out_root, ledger=None):
+    """What each country has to correct, confirm or send again, written by the engine from the held-back records and the findings of the inspection.
+    Returns (DataFrame with one line per country, file and matter, markdown text). Plain words: the people who read it are the countries."""
+    ledger = ledger or load_ledger(out_root)
+    rows = []
+
+    def add(country, file, matter, records, text, action, fr=None):
+        rows.append({"Country": country, "File": file, "Matter": matter, "Records": records, "What we found": text, "What the country does": action,
+                     "Constat": fr[0] if fr else "", "Ce que le pays fait": fr[1] if fr else "", "Sujet": FR_MATTER.get(matter, matter) if fr else ""})
+
+    for h, e in ledger["files"].items():
+        if e.get("superseded") or not e.get("present", True) or e.get("status") == "nothing new" and not e.get("aliases"):
+            continue
+        ctry = e.get("country_folder") or e.get("countries") or "?"
+        name = e["name"]
+        codes = set(e.get("codes") or [])
+        if "not_admin" in codes:
+            continue
+        # held-back records of the file, by reason
+        hp = Path(out_root) / str(e.get("prepared") or "x").replace(".xlsx", "_held.xlsx")
+        if e.get("prepared") and hp.is_file() and int(e.get("held_new") or 0) > 0:
+            try:
+                d = pd.read_excel(hp, dtype=object)
+            except Exception:
+                d = pd.DataFrame()
+            if len(d):
+                d["_r"] = d["Hold_reason"].astype(str)
+                kinds = [("validation error", "validation"), ("missing after standardising", "empty"), ("target or the number vaccinated is not a number", "text"),
+                         ("record of another country", "country"), ("same names as several live records", "several"), ("possible duplicate", "dup")]
+                for key, kind in kinds:
+                    g = d[d["_r"].str.contains(key, regex=False)]
+                    if not len(g):
+                        continue
+                    camp = ", ".join(sorted({"%s %s" % (a, b) for a, b in zip(g["Response"].astype(str), g["Round_Add"].astype(str))})[:3])
+                    where = _top(g["Province"])
+                    n = len(g)
+                    if kind == "validation":
+                        lab = sorted({x.split("validation error: ")[1].split("; ")[0] for x in g["_r"] if "validation error: " in x})
+                        if any("Target population missing" in x for x in lab):
+                            add(ctry, name, "target population missing", n, "%d record(s) of %s have no target population (%s)" % (n, camp, where),
+                                "Fill in the target population (PopPolio) of these districts and send the file again",
+                                fr=("%d enregistrement(s) de %s n'ont pas de population cible (%s)" % (n, camp, where), "Renseigner la population cible (PopPolio) de ces districts et renvoyer le fichier"))
+                        else:
+                            add(ctry, name, "failed a check", n, "%d record(s) of %s fail the check: %s (%s)" % (n, camp, "; ".join(lab) or "see the Issues sheet", where),
+                                "Correct these records and send the file again",
+                                fr=("%d enregistrement(s) de %s ne passent pas le contrôle : %s (%s)" % (n, camp, "; ".join(lab) or "voir la feuille Issues", where), "Corriger ces enregistrements et renvoyer le fichier"))
+                    elif kind == "empty":
+                        cols = sorted({c.strip() for x in g["_r"] for c in x.split("missing after standardising: ")[1].split(";")[0].split(",")})
+                        add(ctry, name, "empty fields", n, "%d record(s) of %s still have no %s after the lookup was used (%s)" % (n, camp, ", ".join(cols), where),
+                            "Fill in %s for these records" % ", ".join(cols),
+                            fr=("%d enregistrement(s) de %s n'ont toujours pas de %s après usage du lookup (%s)" % (n, camp, ", ".join(cols), where), "Renseigner %s pour ces enregistrements" % ", ".join(cols)))
+                    elif kind == "text":
+                        add(ctry, name, "text instead of numbers", n, "%d record(s) of %s have text where the target or the number vaccinated should be (%s)" % (n, camp, where),
+                            "Replace the text by the number",
+                            fr=("%d enregistrement(s) de %s contiennent du texte à la place de la population cible ou du nombre de vaccinés (%s)" % (n, camp, where), "Remplacer le texte par le nombre"))
+                    elif kind == "country":
+                        add(ctry, name, "other country", n, "%d record(s) carry another country than the folder (%s)" % (n, _top(g["Country"])),
+                            "Correct the country or send these records in their own country's folder",
+                            fr=("%d enregistrement(s) portent un autre pays que le dossier (%s)" % (n, _top(g["Country"])), "Corriger le pays ou envoyer ces enregistrements dans le dossier de leur pays"))
+                    elif kind == "several":
+                        ex = ", ".join(sorted({str(x) for x in g["District"].dropna()})[:4])
+                        add(ctry, name, "unit not clear", n, "%d record(s) of %s have a province and district that match several records of the live file (for example %s)" % (n, camp, ex),
+                            "Say which unit (health zone, sub-district or other level) each of these rows is",
+                            fr=("%d enregistrement(s) de %s ont une province et un district qui correspondent à plusieurs enregistrements du fichier de référence (par exemple %s)" % (n, camp, ex), "Indiquer quelle unité (zone de santé, sous-district ou autre niveau) correspond à chacune de ces lignes"))
+                    elif kind == "dup":
+                        live = sorted(set(re.findall(r"\(([^,()]+ Rnd\d+), \d{4}-\d\d-\d\d\)", " ".join(g["_r"]))))[:3]
+                        add(ctry, name, "same place and date, other figures", n,
+                            "%d record(s) of %s look like records already in the live file (%s) with other figures" % (n, camp, ", ".join(live) or "another campaign name or round"),
+                            "Confirm the campaign and round, and which figures are the final ones",
+                            fr=("%d enregistrement(s) de %s ressemblent à des enregistrements déjà présents (%s) avec d'autres chiffres" % (n, camp, ", ".join(live) or "autre nom de campagne ou round"), "Confirmer la campagne et le round, et quels chiffres sont les chiffres définitifs"))
+        # records matched to the live file under another campaign name or round
+        for a_ in e.get("aliases") or []:
+            same_round = str(a_["file_round"]).strip().lower() == str(a_["live_round"]).strip().lower()
+            if same_round:
+                add(ctry, name, "campaign name differs", a_["records"], "%d record(s) are written as %s %s; the live file has the same districts and dates as %s %s" % (
+                    a_["records"], a_["file_name"], a_["file_round"], a_["live_name"], a_["live_round"]),
+                    "Use the live campaign name in the next file (nothing else is needed: the records were matched automatically)",
+                    fr=("%d enregistrement(s) sont écrits %s %s ; le fichier de référence a les mêmes districts et dates sous %s %s" % (a_["records"], a_["file_name"], a_["file_round"], a_["live_name"], a_["live_round"]), "Utiliser le nom de campagne du fichier de référence dans le prochain fichier (rien d'autre n'est nécessaire : les enregistrements ont été rapprochés automatiquement)"))
+            else:
+                add(ctry, name, "round differs", a_["records"], "%d record(s) are written as %s %s; the live file has the same districts and dates as %s %s" % (
+                    a_["records"], a_["file_name"], a_["file_round"], a_["live_name"], a_["live_round"]),
+                    "Confirm the round (the file says %s, the live file says %s) and which figures are the final ones" % (a_["file_round"], a_["live_round"]),
+                    fr=("%d enregistrement(s) sont écrits %s %s ; le fichier de référence a les mêmes districts et dates sous %s %s" % (a_["records"], a_["file_name"], a_["file_round"], a_["live_name"], a_["live_round"]), "Confirmer le round (le fichier indique %s, le fichier de référence indique %s) et quels chiffres sont les chiffres définitifs" % (a_["file_round"], a_["live_round"])))
+        why = str(e.get("why") or "")
+        m = re.search(r"vaccine against the lookup: ([^;]+?)(?:; |$)", why)
+        if "vaccine_vs_lookup" in codes and m:
+            add(ctry, name, "vaccine differs from the lookup", "", m.group(1).strip(), "Confirm the vaccine used in this campaign",
+                fr=("le fichier écrit un vaccin différent de celui du lookup : %s" % m.group(1).strip(), "Confirmer le vaccin utilisé dans cette campagne"))
+        if "wrong_place" in codes:
+            add(ctry, name, "wrong folder", "", why.split(";")[0], "Send the file in the folder of the right country, or tell us it is not needed",
+                fr=(why.split(";")[0], "Envoyer le fichier dans le dossier du bon pays, ou nous dire qu'il n'est pas nécessaire"))
+        if "sheets_skipped" in codes:
+            m = re.search(r"not read: ([^;]+)", why)
+            add(ctry, name, "sheet not read", "", "sheet(s) with column names that could not be read: %s" % (m.group(1) if m else "?"),
+                "Tell us if these sheets hold admin data; if so, put them in the AFRO template",
+                fr=("feuille(s) avec des noms de colonnes qui n'ont pas pu être lues : %s" % (m.group(1) if m else "?"), "Dites-nous si ces feuilles contiennent des données administratives ; si oui, les mettre dans le modèle AFRO"))
+        if "non_numbers" in codes:
+            bc = e.get("bad_cols") or {}
+            core_ = {"TotPop", "PopPolio", "TotalNbrVaccPolio", "Tot_Vacc_nOPV2", "Total_Vacc_bOPV"}
+            hard = {c: n for c, n in bc.items() if c in core_}
+            soft = {c: n for c, n in bc.items() if c not in core_}
+            if hard and not any(r["File"] == name and r["Matter"] == "text instead of numbers" for r in rows):
+                add(ctry, name, "text instead of numbers", sum(hard.values()), "text where a number is expected in %s" % ", ".join("%s (%d cells)" % kv for kv in hard.items()),
+                    "Replace the text by the number",
+                    fr=("texte à la place d'un nombre dans %s" % ", ".join("%s (%d cellules)" % kv for kv in hard.items()), "Remplacer le texte par le nombre"))
+            if soft or not bc:
+                add(ctry, name, "error values in calculated columns", "", ("%d cells that are not numbers in %s" % (sum(soft.values()), ", ".join(sorted(soft)[:6]))) if soft else
+                    (re.search(r"\d+ cell\(s\) that are not numbers", why).group(0) if re.search(r"\d+ cell\(s\) that are not numbers", why) else "cells that are not numbers"),
+                    "For information only: these cells are in calculated columns (coverage, wastage, proportions, month) or in columns of other vaccines, not in the polio target or "
+                    "vaccinated figures, so nothing is held back and no new file is needed; the country can clean them at the source (an error such as #DIV/0! in its own formulas)",
+                    fr=("%d cellules qui ne sont pas des nombres dans %s" % (sum(soft.values()), ", ".join(sorted(soft)[:6])) if soft else "cellules qui ne sont pas des nombres",
+                        "À titre d'information : ces cellules sont dans des colonnes calculées ou de vaccins autres que la polio, pas dans la population cible ni le nombre de vaccinés de la polio ; rien n'est bloqué et aucun nouveau fichier n'est nécessaire"))
+    # pending admin data: rounds of the lookup with nothing received 15 days after their start (written by 'inspect' / 'pending' in Pending_admin_data.xlsx)
+    pp = Path(out_root) / "Pending_admin_data.xlsx"
+    if pp.is_file():
+        try:
+            pn = pd.read_excel(pp, sheet_name="Pending_now", dtype=object)
+        except Exception:
+            pn = pd.DataFrame()
+        days = PENDING_DAYS
+        try:
+            days = int(json.loads((Path(out_root) / "pending_register.json").read_text(encoding="utf-8")).get("days") or PENDING_DAYS)
+        except Exception:
+            pass
+        for _, r in pn.iterrows():
+            lab = "%s %s" % (r["Campaign"], r["Round"])
+            add(str(r["Country"]).strip().upper(), "(no file received)", "data not received", "",
+                "No admin data received for %s (planned start %s, %s days ago; the data are due %d days after the start)" % (lab, r["Planned_start"], r["Days_since_start"], days),
+                "Send the admin data of this round (AFRO template), or tell us if the round did not take place",
+                fr=("Aucune donnée administrative reçue pour %s (début prévu le %s, il y a %s jours ; les données sont attendues %d jours après le début)" % (lab, r["Planned_start"], r["Days_since_start"], days),
+                    "Envoyer les données administratives de ce round (modèle AFRO), ou nous dire si le round n'a pas eu lieu"))
+    f = pd.DataFrame(rows, columns=["Country", "File", "Matter", "Records", "What we found", "What the country does", "Constat", "Ce que le pays fait", "Sujet"]).drop_duplicates(
+        ["Country", "File", "Matter", "What we found"]).sort_values(["Country", "File", "Matter"])
+    lines = ["# What each country has to correct or confirm", "",
+             "Written by the engine from the last inspection (`python admin.py submissions feedback`). Records that passed every check are already in the live file; this list is about the others.", ""]
+    for c, d in f.groupby("Country", sort=True):
+        lines.append("## %s" % c)
+        lines.append("")
+        for _, r in d.iterrows():
+            lines.append("- **%s** (%s): %s. %s." % (r["Matter"], r["File"], r["What we found"], r["What the country does"]))
+        lines.append("")
+    if not len(f):
+        lines.append("Nothing to send back.")
+    return f, "\n".join(lines) + "\n"
+
+
+FRENCH_COUNTRIES = {"ALGERIA", "BENIN", "BURKINA FASO", "BURUNDI", "CAMEROON", "CENTRAL AFRICAN REPUBLIC", "CHAD", "COMOROS", "CONGO", "COTE D'IVOIRE",
+                    "CÔTE D'IVOIRE", "DEMOCRATIC REPUBLIC OF THE CONGO", "GABON", "GUINEA", "MADAGASCAR", "MALI", "MAURITANIA", "NIGER", "SENEGAL", "TOGO"}
+FR_REASON = (("validation error: ", "erreur de validation : "), ("Target population missing or zero", "population cible manquante ou nulle"),
+             ("Missing key field", "champ clé manquant"), ("missing after standardising: ", "manquant après standardisation : "),
+             ("the target or the number vaccinated is not a number", "la population cible ou le nombre de vaccinés n'est pas un nombre"),
+             ("record of another country than the folder", "enregistrement d'un autre pays que le dossier"),
+             ("same names as several live records, none identical (not added): live rows", "mêmes noms que plusieurs enregistrements du fichier de référence, aucun identique (non ajouté) : lignes"),
+             ("possible duplicate: same place, date and vaccine as a live record of another campaign name or round, other figures: live row",
+              "doublon possible : même lieu, date et vaccin qu'un enregistrement d'une autre campagne ou d'un autre round, autres chiffres : ligne"))
+
+
+def _fr_reason(t):
+    t = str(t)
+    for a, b in FR_REASON:
+        t = t.replace(a, b)
+    return t
+
+
+def feedback_files(out_root, folder, ledger=None):
+    """One workbook per country, ready to send: sheet 'What to do' (what we found and what the country does, by file) and sheet 'Records' (the held-back
+    records themselves: province, district, campaign, round, date, the figures and the reason), so the focal point can correct the rows and send them back.
+    Returns [(country, path)]."""
+    ledger = ledger or load_ledger(out_root)
+    f, _ = feedback(out_root, ledger)
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    # the workbooks of an earlier run go to _previous: only the current ones are in the folder, so nothing stale is sent by mistake
+    old = list(folder.glob("Feedback_*.xlsx"))
+    if old:
+        (folder / "_previous").mkdir(exist_ok=True)
+        for o_ in old:
+            try:
+                shutil.move(str(o_), str(folder / "_previous" / o_.name))
+            except Exception:
+                pass
+    keep = ["File", "Province", "District", "Admin_3", "SIA_date", "Response", "Round_Add", "Vaccine_type", "PopPolio", "TotalNbrVaccPolio", "Hold_reason"]
+    out = []
+    today = dt.datetime.now().strftime("%Y-%m-%d")
+    INFO_ONLY = {"campaign name differs", "error values in calculated columns"}
+    for c, d in f.groupby("Country", sort=True):
+        d = d.copy()
+        d.insert(2, "Action needed", d["Matter"].map(lambda m: "No, for information" if m in INFO_ONLY else "Yes"))
+        d = d.sort_values(["Action needed", "File"], ascending=[False, True])
+        needs = bool((d["Action needed"] == "Yes").any())
+        recs = []
+        for h, e in ledger["files"].items():
+            if (e.get("country_folder") or "") != c or e.get("superseded") or not e.get("present", True) or not e.get("prepared"):
+                continue
+            hp = Path(out_root) / str(e["prepared"]).replace(".xlsx", "_held.xlsx")
+            if hp.is_file() and int(e.get("held_new") or 0) > 0:
+                try:
+                    x = pd.read_excel(hp, dtype=object)
+                    x.insert(0, "File", e["name"])
+                    recs.append(x)
+                except Exception:
+                    pass
+        R = pd.concat(recs, ignore_index=True) if recs else pd.DataFrame(columns=keep)
+        R = R[[k for k in keep if k in R.columns]].drop_duplicates()
+        if "SIA_date" in R.columns:
+            R["SIA_date"] = pd.to_datetime(R["SIA_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        french = str(c).upper() in FRENCH_COUNTRIES
+        has_files = any((e.get("country_folder") or "") == c and e.get("present", True) and not e.get("superseded") for e in ledger["files"].values())
+        if french and "Hold_reason" in R.columns:
+            R["Pourquoi non ajouté"] = R["Hold_reason"].map(_fr_reason)
+        R = R.rename(columns={"Hold_reason": "Why it was not added"})
+        D_en = d.drop(columns=["Country", "Constat", "Ce que le pays fait", "Sujet"])
+        D_fr = d.assign(**{"Action requise": d["Action needed"].map(lambda x: "Non, pour information" if x.startswith("No") else "Oui")})[
+            ["File", "Action requise", "Sujet", "Records", "Constat", "Ce que le pays fait"]].rename(columns={"File": "Fichier", "Records": "Enregistrements"})
+        intro = pd.DataFrame({"Admin data, %s, %s" % (c, today): [
+            ("Thank you for the administrative vaccination data you sent. The records that passed all checks are already in the AFRO admin data file."
+             if has_files else "This workbook lists the campaign rounds of your country for which we have not received administrative vaccination data."),
+            "This workbook lists what we could not add yet, what we have not received, and what we ask you to correct, confirm or send.",
+            ("Matter 'data not received': the round started more than %d days ago and its admin data are not in the AFRO admin data file; please send them (AFRO template), or tell us if the round did not take place." % PENDING_DAYS)
+            if (d["Matter"] == "data not received").any() else "",
+            "Sheet 'What to do': one line per file and matter ('Action needed': Yes = we ask you to correct or confirm; No = for your information). Sheet 'Records': the rows concerned (when there are any), with the reason.",
+            "Please send the corrected file, or answer the questions in an email; nothing in the live data is changed without your confirmation."] + ([
+            "Version française : merci pour les données administratives de vaccination envoyées. Les enregistrements qui ont passé tous les contrôles sont déjà dans le fichier AFRO.",
+            "Ce classeur liste ce que nous n'avons pas pu ajouter pour l'instant et ce que nous vous demandons de corriger ou de confirmer (feuille « À faire » ; feuille « Records » : les lignes concernées).",
+            "Merci de renvoyer le fichier corrigé ou de répondre par courriel ; rien n'est modifié dans les données sans votre confirmation."] if french else [])})
+        intro = intro[intro.iloc[:, 0].astype(str).str.len() > 0]
+        path = writable(folder / ("Feedback_%s_%s%s.xlsx" % (re.sub(r"[^A-Za-z0-9]+", "_", c).strip("_"), today, "" if needs else "_information_only")))
+        with pd.ExcelWriter(path, engine="openpyxl") as xw:
+            intro.to_excel(xw, sheet_name="Read me", index=False)
+            D_en.to_excel(xw, sheet_name="What to do", index=False)
+            if french:
+                D_fr.to_excel(xw, sheet_name="À faire", index=False)
+            if len(R):
+                R.to_excel(xw, sheet_name="Records", index=False)
+            for ws in xw.book.worksheets:
+                for col in ws.columns:
+                    w = max(len(str(cell.value)) if cell.value is not None else 0 for cell in col[:60])
+                    ws.column_dimensions[col[0].column_letter].width = min(max(10, w + 2), 70)
+                from openpyxl.styles import Alignment, Font
+                for cell in ws[1]:
+                    cell.font = Font(bold=True)
+                for row in ws.iter_rows(min_row=2):
+                    for cell in row:
+                        cell.alignment = Alignment(wrap_text=True, vertical="top")
+        out.append((c, str(path)))
+    return out
+
+
+def accepted_files(out_root, auto=False):
+    """Prepared record files of the accepted files: [(name, path)]. With auto=True the files of automatic rule 1 are added
+    (never a file a person rejected or accepted otherwise: they are already decided)."""
     ledger = load_ledger(out_root)
     out = []
     for h, e in ledger["files"].items():
@@ -2285,4 +3243,6 @@ def accepted_files(out_root):
             p = Path(out_root) / e["prepared"]
             if p.is_file():
                 out.append((e["name"], str(p)))
+    if auto:
+        out += [(n, p) for n, p, _ in auto_candidates(out_root, ledger)]
     return out
