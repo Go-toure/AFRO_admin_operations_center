@@ -133,6 +133,10 @@ send. The **Submissions** tab runs four things, all with the engine's `submissio
    country in `feedback_by_country` (a French sheet for the francophone countries). All can be downloaded from the tab; sending them
    to the countries is a person's step. The pending register (`pending_register.json`) of the app is separate from the one on a PC.
 
+An optional `inputs/scope_.csv` in the AdminOps store (the file `scope_.csv` of the scope folder: the districts planned per campaign) adds the scope evidence to the lookup issues: the districts of the live records are compared with the districts planned for each campaign, which separates campaigns the lookup cannot (for example a campaign entered twice). Without it the sheets say "scope not available".
+
+An optional `inputs/lookup_overrides.csv` in the AdminOps store holds changes a person decided to the lookup, which GPEI refreshes at every build (a campaign entered twice removed, a round added, a start date moved); they are applied each time the lookup is read. They are decided on the PC with `python admin.py lookup-fix` (propose / adopt) and the two files `corrections.csv` and `lookup_overrides.csv` are copied to the store's `inputs/`.
+
 An optional `inputs/corrections.csv` in the AdminOps store holds corrections a person decided (columns Country, Province, District,
 Response, Round_Add, SIA_date, Column, Found, Restored, Reason, Decided_by, Decided_on); the build applies them and lists every
 change in the audit as "Decided correction". A cell changes only while it still holds the value in `Found`.

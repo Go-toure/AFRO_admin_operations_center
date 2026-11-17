@@ -86,6 +86,10 @@ class Workspace:
              "submissions_auto": bool(extra.get("submissions_auto", True)),
              "pending_days": int(extra.get("pending_days", 15)), "pending_since": str(extra.get("pending_since", "2025-01-01")),
              "corrections_file": str(self.inputs / "corrections.csv"),
+             # optional: decided changes to the lookup (a campaign entered twice removed, a round added), applied every time the lookup is read
+             "lookup_overrides_file": str(self.inputs / "lookup_overrides.csv"),
+             # optional: scope_.csv (districts planned per campaign) in the store's inputs: the lookup issues then carry the scope evidence
+             "scope_file": str(self.inputs / "scope_.csv") if (self.inputs / "scope_.csv").is_file() else "",
              "excel_method": "python", "scope_script_dir": "", "scope_data_dir": ""}
         (self.engine / "admin_settings.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
 
