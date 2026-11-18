@@ -30,6 +30,7 @@ STATUS_OF = [("Pending_now", "Pending"), ("Not_yet_due", "Not due yet"), ("Check
              ("Date_differs_in_live", "Other date in live"), ("Received_not_in_live", "Received, not in live")]
 VIEW_COLUMNS = ["Country", "Response", "Round", "Start date", "End date", "Days since start", "Delay (days past due)", "Due in (days)", "Status",
                 "Vaccines", "Live file", "Next step"]
+GRID_COLUMNS = [c for c in VIEW_COLUMNS if c != "Next step"]   # the next step is shown once as a note under the table
 
 
 def _round_no(x):

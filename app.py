@@ -676,13 +676,25 @@ def server(input, output, session):
         v = pview_filtered()
         if len(v) == 0:
             return render.DataGrid(pd.DataFrame({"": ["nothing for these filters"]}), width="100%")
-        return render.DataGrid(v[wiring_view.VIEW_COLUMNS].astype(str), height="auto", width="100%")
+        return render.DataGrid(v[wiring_view.GRID_COLUMNS].astype(str), height="auto", width="100%")
+
+    @render.ui
+    def p_note():
+        v = pview_filtered()
+        if len(v) == 0 or "Next step" not in v.columns:
+            return ui.div()
+        items = []
+        for st in ["Pending", "Not due yet", "To check", "Other date in live", "Received, not in live"]:
+            notes = sorted({str(x) for x in v.loc[v["Status"] == st, "Next step"].dropna() if str(x).strip() and str(x) != "None"})
+            if notes:
+                items.append(ui.p(ui.strong(st + ": "), " ".join(notes), class_="note", style="margin:2px 0;"))
+        return ui.div(ui.h6("Note: next step", style="margin-top:10px;"), *items) if items else ui.div()
 
     @render.download(filename="Pending_admin_data_view.xlsx")
     def p_dl_view():
         v = pview_filtered()
         buf = io.BytesIO()
-        v[wiring_view.VIEW_COLUMNS].to_excel(buf, index=False, sheet_name="Pending view")
+        v[wiring_view.GRID_COLUMNS].to_excel(buf, index=False, sheet_name="Pending view")
         yield buf.getvalue()
 
     @render.data_frame
@@ -1215,6 +1227,7 @@ def server(input, output, session):
                                  col_widths=[2, 3, 2, 2, 3]),
                              ui.output_ui("pend_tiles"),
                              ui.output_data_frame("p_view"),
+                             ui.output_ui("p_note"),
                              ui.div(ui.input_action_button("p_refresh", "Refresh the pending list", class_="btn-who"),
                                     ui.download_button("p_dl_view", "Download this view (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
                                     ui.download_button("p_dl", "All sheets (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
