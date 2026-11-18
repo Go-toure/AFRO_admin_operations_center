@@ -88,6 +88,8 @@ class Workspace:
              "corrections_file": str(self.inputs / "corrections.csv"),
              # optional: decided changes to the lookup (a campaign entered twice removed, a round added), applied every time the lookup is read
              "lookup_overrides_file": str(self.inputs / "lookup_overrides.csv"),
+             # with scope_.csv in the inputs the build wires by itself the lookup cases the evidence lets it decide (see README); False switches it off
+             "lookup_fix_auto": bool(extra.get("lookup_fix_auto", True)),
              # optional: scope_.csv (districts planned per campaign) in the store's inputs: the lookup issues then carry the scope evidence
              "scope_file": str(self.inputs / "scope_.csv") if (self.inputs / "scope_.csv").is_file() else "",
              "excel_method": "python", "scope_script_dir": "", "scope_data_dir": ""}
