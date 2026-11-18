@@ -165,7 +165,10 @@ def server(input, output, session):
             except Exception:
                 pass
         elif ov_task.status() == "error":
-            ui.notification_show("Could not read SharePoint: %s" % ov_task.error(), type="error", duration=12)
+            if JM.busy() or isinstance(ov_task.error(), PermissionError):
+                ui.notification_show("A file was in use while a job was running: the overview refreshes when the job ends.", duration=6)
+            else:
+                ui.notification_show("Could not read SharePoint: %s" % ov_task.error(), type="error", duration=12)
 
     @reactive.extended_task
     async def rules_task():
@@ -193,7 +196,7 @@ def server(input, output, session):
     def _subs_done():
         if subs_task.status() == "success":
             subs.set(subs_task.result())
-        elif subs_task.status() == "error":
+        elif subs_task.status() == "error" and not (JM.busy() or isinstance(subs_task.error(), PermissionError)):
             ui.notification_show("Could not read the submissions: %s" % subs_task.error(), type="error", duration=12)
 
     @reactive.extended_task
@@ -207,7 +210,7 @@ def server(input, output, session):
     def _wiring_done():
         if wiring_task.status() == "success":
             wiring.set(wiring_task.result())
-        elif wiring_task.status() == "error":
+        elif wiring_task.status() == "error" and not (JM.busy() or isinstance(wiring_task.error(), PermissionError)):
             ui.notification_show("Could not read the lookup and wiring files: %s" % wiring_task.error(), type="error", duration=12)
 
     @reactive.effect

@@ -168,7 +168,14 @@ class Store:
         with open(tmp, "wb") as f:
             for b in r.iter_content(1 << 20):
                 f.write(b)
-        tmp.replace(dest)
+        for attempt in range(8):               # Windows: another process (the engine, a refresh of the overview) may hold the file for a moment
+            try:
+                tmp.replace(dest)
+                break
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                time.sleep(1.5)
         return dest
 
     def get_json(self, path, default=None):
