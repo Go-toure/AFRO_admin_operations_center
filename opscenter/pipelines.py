@@ -2,6 +2,7 @@
 import csv
 import json
 import re
+import time
 from pathlib import Path
 
 from . import config, scope_refresh
@@ -123,8 +124,36 @@ def latest_unpublished(ctx):
 
 
 # ----------------------------------------------------------------------------------------------- steps
-def step_backup(ctx):
-    ctx.ws.pull_light()
+def live_unchanged(ctx):
+    """The version number of the newest backup when the live file on SharePoint still has its size and modified time (so a backup would
+    download 14 MB only to say 'unchanged'); None when it differs, or when this cannot be told (then the normal backup runs)."""
+    try:
+        rows = catalog(ctx.ws)
+        if not rows or not config.ADMIN_URL:
+            return None
+        last = rows[-1]
+        snap = ctx.ws.backup_repo / str(last.get("snapshot", ""))
+        if not snap.is_file():
+            return None
+        meta = ctx.store.g.share_item(config.ADMIN_URL)
+        same_size = int(meta.get("size") or -1) == int(last.get("size_bytes") or -2)
+        same_time = str(meta.get("lastModifiedDateTime", ""))[:19] == str(last.get("sharepoint_modified_utc", ""))[:19]
+        return last["version"] if (same_size and same_time) else None
+    except Exception:
+        return None
+
+
+def step_backup(ctx, quick=False):
+    """Back up the live file. quick=True (the pending list): only the catalog is read, and the live file is not downloaded again when its
+    size and modified time on SharePoint are those of the newest backup."""
+    if quick:
+        ctx.ws.pull_catalog()
+        v = live_unchanged(ctx)
+        if v is not None:
+            ctx.emit("The live file is unchanged since backup version %s (same size and modified time): no new backup needed." % v)
+            return
+    else:
+        ctx.ws.pull_light()
     admin_ok(ctx, "backup")
 
 
@@ -574,8 +603,15 @@ def make_autopilot(dup="none", scope_mode="due", publish=True):
 @operator_only
 def p_pending_refresh(ctx):
     """Rebuilds the pending admin data list and the feedback of the countries (one workbook per country) from the last inspection and the newest live file."""
+    t0 = time.time()
+    lap = lambda what: ctx.emit("[%3d s] %s" % (time.time() - t0, what))
     ensure_inputs(ctx)
-    step_backup(ctx)
+    lap("inputs read")
+    step_backup(ctx, quick=True)
+    lap("live file checked")
     ctx.ws.pull_submissions()
+    lap("submissions ledger read")
     admin_ok(ctx, "submissions", "pending", "--no-pull")
+    lap("pending list built")
     admin_ok(ctx, "submissions", "feedback", "--no-pull")          # the country workbooks read the pending list
+    lap("country workbooks written; saving to SharePoint next")

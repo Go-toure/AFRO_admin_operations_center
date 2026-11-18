@@ -170,6 +170,17 @@ class Workspace:
             n += 1
         return n
 
+    def pull_catalog(self):
+        """Only state, the backup catalog and ops_settings (three small files): what a job needs when it does not touch the runs."""
+        for rel in ("state.json", "catalog/versions.csv", "inputs/ops_settings.json"):
+            d = self.local_of(rel)
+            try:
+                self.store.download(rel, d)
+                self._remember(d)
+            except Exception:
+                pass
+        self.write_settings()
+
     def pull_light(self):
         """state, backup catalog, ops_settings and the small files of every run (manifest, check report, logs)."""
         for rel in ("state.json", "catalog/versions.csv", "inputs/ops_settings.json"):
@@ -191,6 +202,10 @@ class Workspace:
                 if f["name"] in ("manifest.json", "check_report.md", "publish.log", "dictionary.log", "build.log") and not f["is_dir"]:
                     rel = "runs/%s/%s" % (c["name"], f["name"])
                     d = self.local_of(rel)
+                    # a log or report of the same size that is already here and was read from the folder is not downloaded again;
+                    # the manifest (it holds the published flag) is always read
+                    if f["name"] != "manifest.json" and d.is_file() and d.stat().st_size == f["size"] and str(d) in self.sig:
+                        continue
                     self.store.download(rel, d)
                     self._remember(d)
         self.write_settings()
