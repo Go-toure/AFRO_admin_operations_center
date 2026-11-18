@@ -104,6 +104,7 @@ class JobManager:
                     sent = ws.push_changes(job.emit)
                     if sent:
                         job.emit("%d file(s) saved to the SharePoint folder." % len(sent))
+                    ws.prune_feedback(job.emit)
                     ws.prune_backups(config.KEEP_BACKUPS, job.emit)
                     ws.prune_dir("dictionary_backups", config.KEEP_DICT_COPIES, job.emit, "AFRO_admin_data_dictionary_")
                     ws.prune_runs(config.KEEP_RUNS, job.emit)

@@ -535,6 +535,25 @@ class Workspace:
                  % (len(removed), keep_full))
         return removed
 
+    def prune_feedback(self, emit=None):
+        """The country workbooks carry the date in their name, so those of earlier days would pile up in the SharePoint folder. The engine
+        keeps only the current ones in workspace/submissions/feedback_by_country (the earlier ones go to _previous on the PC); here the
+        files of that folder on SharePoint that are no longer in it are removed. Nothing is removed when the local folder is empty."""
+        d = self.workspace / "submissions" / "feedback_by_country"
+        if not d.is_dir():
+            return []
+        current = {f.name for f in d.iterdir() if f.is_file()}
+        if not current:
+            return []
+        gone = []
+        for f in self.store.list("submissions/feedback_by_country"):
+            if not f["is_dir"] and f["name"] not in current:
+                self.store.delete("submissions/feedback_by_country/" + f["name"])
+                gone.append(f["name"])
+        if gone and emit:
+            emit("Storage: %d country workbook(s) of earlier days removed from the SharePoint folder (the current ones stay)." % len(gone))
+        return gone
+
     def prune_by_age(self, prefix, keep, emit=None):
         """Keep the `keep` most recently changed entries (files or folders) of a folder in the store, remove the others."""
         if keep <= 0:
