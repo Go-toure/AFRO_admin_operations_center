@@ -1135,27 +1135,6 @@ def server(input, output, session):
                 ui.nav_panel("Cycle", ui.navset_pill(
                     ui.nav_panel("Run", ui.output_ui("cycle_ui")),
                     ui.nav_panel("Submissions", ui.output_ui("subs_ui")),
-                    ui.nav_panel("Pending admin data",
-                                 ui.p("The rounds of the lookup (GPEI) whose admin data are not in the live file 15 days after their planned start date. "
-                                      "Read from the last inspection; 'Refresh the pending list' rebuilds it from the newest live file. Nothing is sent to the countries.",
-                                      class_="note"),
-                                 ui.output_ui("pend_tiles"),
-                                 ui.layout_columns(
-                                     ui.input_select("p_sheet", "Show", choices=PEND_SHEETS, selected="Pending_now", width="100%"),
-                                     ui.input_select("p_country", "Country", choices=["All"], width="100%"),
-                                     ui.div(ui.input_action_button("p_refresh", "Refresh the pending list", class_="btn-who"),
-                                            ui.download_button("p_dl", "Pending admin data (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
-                                            style="margin-top:32px;"),
-                                     col_widths=[5, 3, 4]),
-                                 ui.output_data_frame("p_table"),
-                                 ui.h5("By country", style="margin-top:14px;"), ui.output_data_frame("p_bycountry"),
-                                 ui.div(ui.h5("Close a round"),
-                                        ui.p("A round that did not take place, or whose data are not expected, can be closed: it leaves this list and the country "
-                                             "feedback. The decision is kept in the SharePoint folder. Operators only.", class_="note"),
-                                        ui.input_select("w_round", "Round (from 'Pending now')", choices={}, width="100%"),
-                                        ui.input_text("w_note", "Why (kept with the decision)", width="100%"),
-                                        ui.input_action_button("w_close", "Close this round", class_="btn-outline-danger"),
-                                        class_="stepcard", style="margin-top:14px;")),
                     ui.nav_panel("Lookup & wiring", ui.output_ui("wiring_ui")),
                     ui.nav_panel("Files & feedback",
                              ui.layout_columns(
@@ -1168,6 +1147,27 @@ def server(input, output, session):
                                         ui.download_button("f_fix", "Download the fix list", class_="btn-who", style="margin-left:8px;"), class_="stepcard"),
                                  col_widths=[6, 6])),
                     id="tabs_cycle")),
+                ui.nav_panel("Pending admin data",
+                             ui.p("The rounds of the lookup (GPEI) whose admin data are not in the live file 15 days after their planned start date. "
+                                  "Read from the last inspection; 'Refresh the pending list' rebuilds it from the newest live file. Nothing is sent to the countries.",
+                                  class_="note"),
+                             ui.output_ui("pend_tiles"),
+                             ui.layout_columns(
+                                 ui.input_select("p_sheet", "Show", choices=PEND_SHEETS, selected="Pending_now", width="100%"),
+                                 ui.input_select("p_country", "Country", choices=["All"], width="100%"),
+                                 ui.div(ui.input_action_button("p_refresh", "Refresh the pending list", class_="btn-who"),
+                                        ui.download_button("p_dl", "Pending admin data (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
+                                        style="margin-top:32px;"),
+                                 col_widths=[5, 3, 4]),
+                             ui.output_data_frame("p_table"),
+                             ui.h5("By country", style="margin-top:14px;"), ui.output_data_frame("p_bycountry"),
+                             ui.div(ui.h5("Close a round"),
+                                    ui.p("A round that did not take place, or whose data are not expected, can be closed: it leaves this list and the country "
+                                         "feedback. The decision is kept in the SharePoint folder. Operators only.", class_="note"),
+                                    ui.input_select("w_round", "Round (from 'Pending now')", choices={}, width="100%"),
+                                    ui.input_text("w_note", "Why (kept with the decision)", width="100%"),
+                                    ui.input_action_button("w_close", "Close this round", class_="btn-outline-danger"),
+                                    class_="stepcard", style="margin-top:14px;")),
                 ui.nav_panel("Explore & quality", ui.navset_pill(
                 ui.nav_panel("Find records",
                              ui.layout_columns(
