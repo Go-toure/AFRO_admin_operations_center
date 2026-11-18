@@ -1,6 +1,6 @@
-fee40ef6df25 admin.py
+82372088984f admin.py
 dca017071ce1 add_coadmin_columns.py
 20ad54e59ebc publish_admin_data.py
 c314211de6bc refresh_lookup.py
-dc3b6aa900ff submissions.py
+60cbb31b7937 submissions.py
 0263d06ca077 sp_versions.py (patched)
