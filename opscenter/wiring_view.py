@@ -71,7 +71,7 @@ def pending_view(pa, ends):
             def num(v):
                 v = pd.to_numeric(v, errors="coerce")
                 return "" if pd.isna(v) else int(v)
-            rows.append({"Country": r.get("Country"), "Response": r.get("Campaign"), "Round": rn if rn is not None else r.get("Round"),
+            rows.append({"Country": r.get("Country"), "Response": r.get("Campaign"), "Round": ("Rnd%d" % rn) if rn is not None else r.get("Round"),
                          "Start date": start.strftime("%Y-%m-%d") if pd.notna(start) else "",
                          "End date": ends.get((str(r.get("Campaign")).strip(), rn), ""),
                          "Days since start": num(since), "Delay (days past due)": num(r.get("Days_overdue")) if label != "Not due yet" else "",
