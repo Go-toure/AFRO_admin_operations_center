@@ -230,7 +230,12 @@ def p_publish(ctx):
 def make_all(dup="none"):
     @operator_only
     def p(ctx):
-        """backup -> build -> check -> values -> publish, all in one go (the run files stay on this server meanwhile)."""
+        """inspect the submissions -> build -> check -> values -> publish, all in one go (the run files stay on this server meanwhile).
+        The inspection comes first so that the files that arrived since the last one are in this build; without a submissions folder it is skipped."""
+        if config.SUBMISSIONS_URL:
+            ctx.emit("=== Step 1: inspect the submissions (the files that arrived since the last inspection are in this build) ===")
+            step_inspect(ctx)
+            ctx.ws.push_changes(ctx.emit)
         step_build(ctx, dup)
         ctx.ws.push_changes(ctx.emit)
         admin_ok(ctx, "check")

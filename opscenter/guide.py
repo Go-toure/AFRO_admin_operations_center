@@ -35,7 +35,7 @@ SECTIONS = [
         ("4  Store values", "writes the check_dp values into the file (no Excel needed)."),
         ("5  Publish", "replaces the data file and the data dictionary on SharePoint, backs up again, and cleans the SharePoint folder "
                        "as its last step. It stops if the live file changed since the build."),
-        ("Run the whole cycle", "does the build, check, values and publish in one go and stops at the first problem."),
+        ("Run the whole cycle", "inspects the submissions, then does the build, check, values and publish in one go and stops at the first problem."),
     ]),
     ("What the Build corrects for you", [
         ("Co-administration", "merges an nOPV2 and a bOPV record of the same district into one combined record."),

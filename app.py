@@ -764,7 +764,7 @@ def server(input, output, session):
                 ui.div(
                     card("4  Store the check_dp values", "Writes the check_dp values into the file (no Excel needed).", "j_values", "Store values"),
                     card("5  Publish", "Replaces the data file and then the data dictionary on SharePoint, keeps no version history there, backs up again. Stops if the live file changed since the build. Its last step cleans up the SharePoint folder (old versions, old builds and results, the recycle bin).", "j_publish", "Publish data + dictionary", True),
-                    card("All steps", "Build, check, store values and publish (with the clean-up) in one go. Stops at the first problem.", "j_all", "Run the whole cycle", True),
+                    card("All steps", "Inspect the submissions, build, check, store values and publish (with the clean-up) in one go. Stops at the first problem.", "j_all", "Run the whole cycle", True),
                 ),
                 col_widths=[6, 6]),
         )
