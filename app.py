@@ -177,13 +177,17 @@ def server(input, output, session):
             ws.prepare()
             p = subprocess.run([sys.executable, str(ws.engine / "admin.py"), "rules"], cwd=str(ws.engine), env=ws.env(),
                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
-            return p.stdout or p.stderr
+            if p.returncode and not p.stdout:
+                return "The rules could not be read (admin.py rules stopped, exit %s):\n%s" % (p.returncode, (p.stderr or "")[-1500:])
+            return p.stdout or p.stderr or "admin.py rules printed nothing."
         return await asyncio.to_thread(work)
 
     @reactive.effect
     def _rules_done():
         if rules_task.status() == "success":
             rules_text.set(rules_task.result())
+        elif rules_task.status() == "error":
+            rules_text.set("The rules could not be read: %s: %s\nPress Refresh to try again." % (type(rules_task.error()).__name__, rules_task.error()))
 
     @reactive.extended_task
     async def subs_task():
@@ -222,6 +226,8 @@ def server(input, output, session):
         ov_task()
         subs_task()
         wiring_task()
+        if not rules_text() or rules_text().startswith("The rules could not"):
+            rules_task()
 
     # ---------------------------------------------------------------- jobs
     def is_operator():

@@ -19,12 +19,35 @@ import os
 import re
 import shutil
 import sys
+import threading
+import time
 from pathlib import Path
 
 from . import config
 
 SKIP_DIRS = {"out", "_backup_cache", "__pycache__", "_previous"}     # _previous: the country workbooks of an earlier inspection, kept on the PC only
 SKIP_SUFFIX = (".part", ".pkl", ".tmp")
+
+
+_PREPARE_LOCK = threading.RLock()       # the overview, the rules, the submissions and a job all prepare the workspace: one at a time
+
+
+def _copy_if_changed(src, dst):
+    """Copy a file only when its content differs (a file the engine is reading is not touched), and retry when Windows holds it for a moment."""
+    src, dst = Path(src), Path(dst)
+    try:
+        if dst.is_file() and dst.read_bytes() == src.read_bytes():
+            return
+    except OSError:
+        pass
+    for attempt in range(8):
+        try:
+            shutil.copy2(src, dst)
+            return
+        except PermissionError:
+            if attempt == 7:
+                raise
+            time.sleep(1.0)
 
 
 class Workspace:
@@ -55,18 +78,19 @@ class Workspace:
     # ------------------------------------------------------------------ engine set-up
     def prepare(self):
         """Copy the engine to a writable place, write its settings, and make the backup tool ready."""
-        for d in (self.backup_repo / "catalog", self.backup_repo / "snapshots" / "admin", self.backup_repo / "config",
-                  self.workspace / "runs", self.inputs, self.logs):
-            d.mkdir(parents=True, exist_ok=True)
-        src = config.HERE / "engine"
-        self.engine.mkdir(parents=True, exist_ok=True)
-        for f in ("admin.py", "add_coadmin_columns.py", "publish_admin_data.py", "refresh_lookup.py", "submissions.py"):
-            shutil.copy2(src / f, self.engine / f)
-        shutil.copy2(src / "backup_tool" / "sp_versions.py", self.backup_repo / "sp_versions.py")
-        (self.backup_repo / "config" / "tracked_files.json").write_text(json.dumps({"files": [
-            {"key": "admin", "filename": "AFRO_admin_data.xlsx", "share_url": config.ADMIN_URL, "min_bytes": 100000}]}),
-            encoding="utf-8")
-        self.write_settings()
+        with _PREPARE_LOCK:
+            for d in (self.backup_repo / "catalog", self.backup_repo / "snapshots" / "admin", self.backup_repo / "config",
+                      self.workspace / "runs", self.inputs, self.logs):
+                d.mkdir(parents=True, exist_ok=True)
+            src = config.HERE / "engine"
+            self.engine.mkdir(parents=True, exist_ok=True)
+            for f in ("admin.py", "add_coadmin_columns.py", "publish_admin_data.py", "refresh_lookup.py", "submissions.py"):
+                _copy_if_changed(src / f, self.engine / f)
+            _copy_if_changed(src / "backup_tool" / "sp_versions.py", self.backup_repo / "sp_versions.py")
+            (self.backup_repo / "config" / "tracked_files.json").write_text(json.dumps({"files": [
+                {"key": "admin", "filename": "AFRO_admin_data.xlsx", "share_url": config.ADMIN_URL, "min_bytes": 100000}]}),
+                encoding="utf-8")
+            self.write_settings()
 
     def write_settings(self):
         extra = {}
