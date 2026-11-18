@@ -296,10 +296,7 @@ def sub_ledger(ws):
         return {"files": {}}
 
 
-@operator_only
-def p_sub_inspect(ctx):
-    """Read every file of the submissions folder, say whether it is in the template format, check every record and value, and
-    compare with the live file. Changes nothing in the live file and nothing in the folder of the countries."""
+def step_inspect(ctx):
     need(ctx, config.SUBMISSIONS_URL, "The variable OPS_SUBMISSIONS_SHARE_URL (share link of the Admin_data_submissions folder) is not set.")
     ensure_inputs(ctx)
     step_backup(ctx)                       # 'live' = the newest backup of the file on SharePoint
@@ -313,6 +310,13 @@ def p_sub_inspect(ctx):
     finally:
         ctx.ws.push_lookup(ctx.emit)
     ctx.ws.prune_prepared(ctx.emit)
+
+
+@operator_only
+def p_sub_inspect(ctx):
+    """Read every file of the submissions folder, say whether it is in the template format, check every record and value, and
+    compare with the live file. Changes nothing in the live file and nothing in the folder of the countries."""
+    step_inspect(ctx)
 
 
 def make_sub_decide(action, target, note):
@@ -391,4 +395,122 @@ def make_pending_close(target, note):
             args += ["--note", note]
         admin_ok(ctx, *args)
         admin_ok(ctx, "submissions", "pending", "--no-pull")
+    return p
+
+
+# ----------------------------------------------------------------------------------------------- autopilot
+SCOPE_CHOICES = {
+    "due": "Refresh the scope if it is older than %d days (on a PC with R; skipped otherwise)" % config.SCOPE_MAX_AGE_DAYS,
+    "always": "Always refresh the scope first (needs R on this machine)",
+    "never": "Do not refresh the scope",
+}
+
+
+def scope_age_days(ctx):
+    """Age in days of inputs/scope_.csv in the SharePoint folder, or None when there is none."""
+    import datetime as dt
+    for c in ctx.store.list("inputs"):
+        if c["name"] == "scope_.csv" and c.get("modified"):
+            try:
+                t = dt.datetime.fromisoformat(c["modified"].replace("Z", "+00:00"))
+                return (dt.datetime.now(dt.timezone.utc) - t).days
+            except ValueError:
+                return None
+    return None
+
+
+def banner(ctx, n, total, text):
+    ctx.emit("")
+    ctx.emit("=== AUTOPILOT step %d of %d: %s ===" % (n, total, text))
+
+
+def autopilot_report(ctx):
+    """What is left for a person after the automatic run, read from the files the run just wrote."""
+    import pandas as pd
+    sub = ctx.ws.workspace / "submissions"
+    ctx.emit("")
+    ctx.emit("=== WHAT IS LEFT FOR A PERSON ===")
+    try:
+        x = pd.read_excel(sub / "Pending_admin_data.xlsx", sheet_name=None)
+        ctx.emit("Rounds with nothing received 15 days after their start (ask the country): %d" % len(x.get("Pending_now", [])))
+        ctx.emit("Rounds to check for another campaign name: %d" % len(x.get("Check_other_name", [])))
+        ctx.emit("Lookup issues for the GPEI maintainers (nothing in the data to fix): %d" % len(x.get("Lookup_issues", [])))
+    except Exception:
+        ctx.emit("(the pending list could not be read)")
+    try:
+        led = sub_ledger(ctx.ws).get("files", {})
+        from .submissions_view import _auto_names
+        auto = _auto_names(ctx.ws)
+        wait = [e.get("path") or e.get("name") for e in led.values()
+                if e.get("present", True) and not e.get("superseded") and not e.get("decision") and e.get("name") not in auto
+                and e.get("status") not in ("blocked", "nothing new")]
+        ctx.emit("Files that no automatic rule takes, waiting for accept / reject: %d" % len(wait))
+        for w in wait[:15]:
+            ctx.emit("   - %s" % w)
+    except Exception:
+        pass
+    ctx.emit("The feedback workbooks of the countries are ready in Submissions > Feedback (nothing was sent to any country).")
+
+
+def make_autopilot(dup="none", scope_mode="due"):
+    @operator_only
+    def p(ctx):
+        """The whole cycle with no manual step: (scope if due) -> inspect the submissions (the automatic rules decide and fix what is safe) ->
+        build (lookup wired by evidence, corrections applied, accepted files added) -> check -> check_dp values -> publish -> refresh the
+        pending list and the feedback. It stops at the first problem; nothing is published unless the check passed. Files that no rule takes,
+        records held back and rounds with nothing received are reported at the end for a person; nothing is sent to the countries."""
+        total = 7
+        stage = "start"
+        published = False
+        try:
+            banner(ctx, 1, total, "scope")
+            age = scope_age_days(ctx)
+            ctx.emit("Scope file in the SharePoint folder: %s" % ("none" if age is None else "%d day(s) old" % age))
+            due = scope_mode == "always" or (scope_mode == "due" and (age is None or age >= config.SCOPE_MAX_AGE_DAYS))
+            if due and scope_refresh.status()["ready"]:
+                stage = "scope refresh"
+                scope_refresh.run(ctx, "scope")
+            elif due:
+                ctx.emit("The scope is due but cannot be refreshed here (%s): the cycle goes on with the scope in SharePoint." %
+                         "; ".join(n for n, ok, _ in scope_refresh.status()["items"] if not ok))
+            else:
+                ctx.emit("Not due: the scope is kept.")
+            banner(ctx, 2, total, "inspect the submissions (automatic rules)")
+            stage = "inspect"
+            if config.SUBMISSIONS_URL:
+                step_inspect(ctx)
+                ctx.ws.push_changes(ctx.emit)
+            else:
+                ctx.emit("No submissions folder is connected: skipped.")
+            banner(ctx, 3, total, "build")
+            stage = "build"
+            step_build(ctx, dup)
+            ctx.ws.push_changes(ctx.emit)
+            banner(ctx, 4, total, "check")
+            stage = "check"
+            admin_ok(ctx, "check")
+            ctx.ws.push_changes(ctx.emit)
+            banner(ctx, 5, total, "store the check_dp values")
+            stage = "values"
+            admin_ok(ctx, "excel")
+            ctx.ws.push_changes(ctx.emit)
+            banner(ctx, 6, total, "publish")
+            stage = "publish"
+            admin_ok(ctx, "publish")
+            published = True
+            last_step_cleanup(ctx)
+            banner(ctx, 7, total, "refresh the pending list and the feedback")
+            stage = "after the publish"
+            if config.SUBMISSIONS_URL:
+                step_backup(ctx)                          # the new live file is the reference of the pending list
+                admin_ok(ctx, "submissions", "pending", "--no-pull")
+                admin_ok(ctx, "submissions", "feedback", "--no-pull")
+            autopilot_report(ctx)
+        except StepFailed:
+            ctx.emit("")
+            if published:
+                ctx.emit("AUTOPILOT: the data and the dictionary ARE published; only the last step (%s) did not finish." % stage)
+            else:
+                ctx.emit("AUTOPILOT stopped at the step '%s'. Nothing was published: the live file on SharePoint is unchanged." % stage)
+            raise
     return p

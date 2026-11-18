@@ -351,6 +351,42 @@ def server(input, output, session):
     def _j7():
         start_with_duplicates("all")
 
+    pending_auto = reactive.Value(None)
+
+    @reactive.effect
+    @reactive.event(input.j_auto)
+    def _j_auto():
+        if not is_operator() or JM.busy():
+            start("Autopilot", pipelines.make_autopilot())      # shows the usual message
+            return
+        try:
+            mode = input.c_dup()
+        except Exception:
+            mode = "none"
+        if mode not in ("complete", "first"):
+            mode = "none"
+        try:
+            scope_mode = input.c_scope()
+        except Exception:
+            scope_mode = "due"
+        pending_auto.set((mode, scope_mode))
+        ui.modal_show(ui.modal(
+            ui.p("The autopilot will run the whole cycle and PUBLISH the result to SharePoint (the data file and its dictionary) if the check passes. "
+                 "The live file is backed up first, and the cycle stops at the first problem without publishing."),
+            ui.p(("It will also remove the extra copy of each duplicate record (%s). " % mode) if mode != "none" else "Duplicates are only listed, none removed. ",
+                 "Scope: %s." % pipelines.SCOPE_CHOICES.get(scope_mode, scope_mode)),
+            title="Run the autopilot?", easy_close=True,
+            footer=ui.TagList(ui.modal_button("Cancel"), ui.input_action_button("j_auto_yes", "Yes, run it", class_="btn-who"))))
+
+    @reactive.effect
+    @reactive.event(input.j_auto_yes)
+    def _j_auto_go():
+        ui.modal_remove()
+        p = pending_auto()
+        pending_auto.set(None)
+        if p:
+            start("Autopilot (duplicates: %s, scope: %s)" % p, pipelines.make_autopilot(*p))
+
     @reactive.effect
     @reactive.event(input.s_inspect)
     def _s_inspect():
@@ -695,6 +731,16 @@ def server(input, output, session):
                          "Quality & compare tab.", class_="note"),
                     ui.input_select("c_dup", None, choices=pipelines.DUP_MODES, selected="none", width="100%"),
                     class_="stepcard") if op else ui.div()),
+            ((ui.div(ui.h5("Autopilot"),
+                     ui.p("One button for the whole cycle, with nothing to decide on the way: the scope if it is due, the inspection of the submissions "
+                          "(the automatic rules accept and fix what is safe), the build (lookup wired by the evidence, decided corrections applied, "
+                          "accepted files added), the check, the check_dp values and the publish, then the pending list and the feedback of the "
+                          "countries. It stops at the first problem and then nothing is published. At the end the log lists what is left for a "
+                          "person (files no rule takes, rounds with nothing received). Nothing is sent to any country.", class_="note"),
+                     ui.input_select("c_scope", "Scope", choices=pipelines.SCOPE_CHOICES, selected="due", width="100%"),
+                     ui.input_action_button("j_auto", "Run the autopilot", class_="btn-who"),
+                     ui.p("The duplicates choice above applies to the autopilot too.", class_="note"),
+                     class_="stepcard", style="border:2px solid var(--who, #009ADE);")) if op else ui.div()),
             ui.layout_columns(
                 ui.div(
                     card("1  Back up the live file", "Saves the file that is on SharePoint now as a new backup version (only if it changed).", "j_backup", "Back up now"),

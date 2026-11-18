@@ -36,6 +36,7 @@ TOKEN_URL = os.environ.get("PUBLISH_TOKEN_URL", "https://login.microsoftonline.c
 # create entries with  python tools/make_user.py
 USERS_JSON = os.environ.get("OPS_USERS", "{}")
 
+SCOPE_MAX_AGE_DAYS = int(os.environ.get("OPS_SCOPE_MAX_AGE_DAYS", "7"))    # the autopilot refreshes the scope when it is older (on a machine with R)
 LOCK_MINUTES = int(os.environ.get("OPS_LOCK_MINUTES", "90"))      # a job holding the lock for longer is considered dead
 MIN_BUILD_GB = float(os.environ.get("OPS_MIN_BUILD_GB", "5"))     # a build peaks at about 4 GB of memory
 SKIP_MEMORY_CHECK = os.environ.get("OPS_SKIP_MEMORY_CHECK", "1" if LOCAL else "") == "1"      # a PC has the memory a build needs

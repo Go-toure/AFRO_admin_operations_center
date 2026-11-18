@@ -97,6 +97,15 @@ python run_local.py                 # starts the app on http://127.0.0.1:8765 (i
 
 Without `OPS_USERS` the person at the keyboard is the operator (no sign-in page). The work files are kept in `ops_work/` (git-ignored).
 
+### Autopilot (tab Cycle)
+
+One button runs the whole cycle with nothing to decide on the way: the scope if it is older than `OPS_SCOPE_MAX_AGE_DAYS` (default 7; only on a machine
+with R, skipped otherwise), the inspection of the submissions (the automatic rules accept and fix what is safe), the build (the lookup wired by the
+evidence, the decided corrections applied, the accepted files added), the check, the check_dp values, the publish (data file and dictionary), then the
+pending list and the country feedback. It asks for one confirmation, stops at the first problem (then nothing is published: the live file is backed up
+first and the check must pass), and ends with the list of what is left for a person: files no rule takes, records held back, rounds with nothing
+received. Nothing is sent to any country. The duplicates choice of the Cycle tab applies to it.
+
 ### Scope refresh and lookup wiring (tab Lookup & wiring)
 
 * `scope_pipeline/` holds what the scope refresh runs: the GPEI fetch (`gpei_fetch.py`), the R build with the geo-reference standardization
