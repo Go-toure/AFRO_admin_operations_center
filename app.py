@@ -1031,7 +1031,11 @@ def server(input, output, session):
             ui.navset_tab(
                 ui.nav_panel("Home", ui.output_ui("overview_ui"),
                              ui.accordion(ui.accordion_panel("Quick start guide", ui.output_ui("guide_ui")), id="home_guide", open=False, class_="mt-3")),
-                ui.nav_panel("Cycle", ui.output_ui("cycle_ui"), ui.hr(), ui.h4("Files and feedback of a build"),
+                ui.nav_panel("Cycle", ui.navset_pill(
+                    ui.nav_panel("Run", ui.output_ui("cycle_ui")),
+                    ui.nav_panel("Submissions", ui.output_ui("subs_ui")),
+                    ui.nav_panel("Lookup & wiring", ui.output_ui("wiring_ui")),
+                    ui.nav_panel("Files & feedback",
                              ui.layout_columns(
                                  ui.div(ui.h5("Files of a build"), ui.input_select("f_run", "Build", choices=[""]),
                                         ui.input_select("f_file", "File", choices=[]),
@@ -1041,9 +1045,7 @@ def server(input, output, session):
                                         ui.download_button("f_fb", "Download the feedback", class_="btn-who"),
                                         ui.download_button("f_fix", "Download the fix list", class_="btn-who", style="margin-left:8px;"), class_="stepcard"),
                                  col_widths=[6, 6])),
-                ui.nav_panel("Submissions & lookup", ui.navset_pill(
-                    ui.nav_panel("Submissions", ui.output_ui("subs_ui")),
-                    ui.nav_panel("Lookup & wiring", ui.output_ui("wiring_ui")), id="tabs_intake")),
+                    id="tabs_cycle")),
                 ui.nav_panel("Explore & quality", ui.navset_pill(
                 ui.nav_panel("Find records",
                              ui.layout_columns(
