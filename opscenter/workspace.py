@@ -147,6 +147,16 @@ class Workspace:
         except OSError:
             pass
 
+    def _unsent(self, p):
+        """True when the file here was written by a job after it was last read from / sent to SharePoint: reading the folder again must not
+        replace it (the publish writes the published flag into state.json and the manifest, and the job sends them only when it ends)."""
+        try:
+            st = Path(p).stat()
+        except OSError:
+            return False
+        sig = self.sig.get(str(p))
+        return sig is not None and sig != (st.st_size, st.st_mtime_ns)
+
     def save_sig(self):
         try:
             self.sigfile.parent.mkdir(parents=True, exist_ok=True)
@@ -174,6 +184,8 @@ class Workspace:
         """Only state, the backup catalog and ops_settings (three small files): what a job needs when it does not touch the runs."""
         for rel in ("state.json", "catalog/versions.csv", "inputs/ops_settings.json"):
             d = self.local_of(rel)
+            if self._unsent(d):
+                continue
             try:
                 self.store.download(rel, d)
                 self._remember(d)
@@ -185,6 +197,8 @@ class Workspace:
         """state, backup catalog, ops_settings and the small files of every run (manifest, check report, logs)."""
         for rel in ("state.json", "catalog/versions.csv", "inputs/ops_settings.json"):
             d = self.local_of(rel)
+            if self._unsent(d):
+                continue
             try:
                 self.store.download(rel, d)
                 self._remember(d)
@@ -204,6 +218,8 @@ class Workspace:
                     d = self.local_of(rel)
                     # a log or report of the same size that is already here and was read from the folder is not downloaded again;
                     # the manifest (it holds the published flag) is always read
+                    if self._unsent(d):
+                        continue
                     if f["name"] != "manifest.json" and d.is_file() and d.stat().st_size == f["size"] and str(d) in self.sig:
                         continue
                     self.store.download(rel, d)

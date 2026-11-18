@@ -577,6 +577,7 @@ def make_autopilot(dup="none", scope_mode="due", publish=True):
             if publish:
                 admin_ok(ctx, "publish")
                 published = True
+                ctx.ws.push_changes(ctx.emit)             # the published flag (manifest, state.json) reaches SharePoint now, before any step reads the folder again
                 last_step_cleanup(ctx)
                 if not (sub_ver(ctx)):
                     ctx.emit("WARNING: the published file could not be verified: check it by hand.")
