@@ -14,6 +14,8 @@ from opscenter.jobs import JobManager
 from opscenter.store import Store, StoreError
 from opscenter.workspace import Workspace
 
+MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+
 # ------------------------------------------------------------------------------------------------ shared objects
 _store = None
 _ws = None
@@ -601,12 +603,51 @@ def server(input, output, session):
             except Exception:
                 cur = "All"
         ui.update_select("p_country", choices=["All"] + countries, selected=cur if cur in countries else "All")
+        pv = d.get("pview")
+        if pv is not None and len(pv):
+            years = sorted({str(int(y)) for y in pv["_start"].dt.year.dropna()}, reverse=True)
+            with reactive.isolate():
+                try:
+                    cy = input.p_year()
+                except Exception:
+                    cy = "All"
+            ui.update_select("p_year", choices=["All"] + years, selected=cy if cy in years else "All")
         pend = pa.get("Pending_now")
         choices = {}
         if pend is not None and len(pend):
             for _, r in pend.iterrows():
                 choices[wiring_view.round_key(r)] = "%s | %s | %s (planned %s)" % (r["Country"], r["Campaign"], r["Round"], str(r["Planned_start"])[:10])
         ui.update_select("w_round", choices=choices)
+
+    def pview_filtered():
+        """The combined pending view with the filters of the tab: country, status, year, month, last X months."""
+        d = wiring()
+        df = (d or {}).get("pview")
+        if df is None or len(df) == 0:
+            return pd.DataFrame(columns=wiring_view.VIEW_COLUMNS + ["_start"])
+
+        def val(name, default):
+            try:
+                v = input[name]()
+                return default if v is None else v
+            except Exception:
+                return default
+        c, st, yr, mo, last = val("p_country", "All"), val("p_status", "All"), val("p_year", "All"), val("p_month", "All"), val("p_last", 0)
+        if c != "All":
+            df = df[df["Country"].astype(str) == c]
+        if st != "All":
+            df = df[df["Status"] == st]
+        if yr != "All":
+            df = df[df["_start"].dt.year == int(yr)]
+        if mo != "All" and mo in MONTHS:
+            df = df[df["_start"].dt.month == MONTHS.index(mo) + 1]
+        try:
+            last = int(last or 0)
+        except (TypeError, ValueError):
+            last = 0
+        if last > 0:
+            df = df[df["_start"] >= (pd.Timestamp.now().normalize() - pd.DateOffset(months=last))]
+        return df
 
     @render.ui
     def pend_tiles():
@@ -616,19 +657,33 @@ def server(input, output, session):
         pa = d.get("pend_all") or {}
         if not pa:
             return ui.p("No pending list yet: run 'Inspect the submissions' or 'Refresh the pending list'.", class_="note")
+        v = pview_filtered()
+        cnt = lambda s_: int((v["Status"] == s_).sum()) if len(v) else 0
+        delay = pd.to_numeric(v["Delay (days past due)"], errors="coerce").max() if len(v) else None
         n = lambda k: len(pa.get(k, []))
-        days = ""
-        pn = pa.get("Pending_now")
-        if pn is not None and len(pn) and "Days_since_start" in pn.columns:
-            days = "the oldest started %s days ago" % int(pd.to_numeric(pn["Days_since_start"], errors="coerce").max())
+        longest = ("longest delay: %d days past due" % delay) if delay is not None and delay == delay else "nothing received: ask the country"
         return ui.layout_columns(
-            tile("Pending now", str(n("Pending_now")), days or "nothing received: ask the country"),
-            tile("To check", str(n("Check_other_name")), "may be under another campaign name"),
-            tile("Other date in the live file", str(n("Date_differs_in_live")), "campaign and round are there"),
-            tile("Received, not in live", str(n("Received_not_in_live")), "held back or already there"),
-            tile("Not yet due", str(n("Not_yet_due")), "to watch"),
-            tile("Resolved / closed", "%d / %d" % (n("Resolved"), n("Closed")), "data arrived / a person closed it"),
+            tile("Pending", str(cnt("Pending")), longest),
+            tile("Not due yet", str(cnt("Not due yet")), "started less than 15 days ago"),
+            tile("To check", str(cnt("To check")), "may be under another campaign name"),
+            tile("Other date in live", str(cnt("Other date in live")), "campaign and round are there"),
+            tile("Received, not in live", str(cnt("Received, not in live")), "held back or already there"),
+            tile("Resolved / closed", "%d / %d" % (n("Resolved"), n("Closed")), "all time, not filtered"),
             col_widths=[4, 4, 4, 4, 4, 4])
+
+    @render.data_frame
+    def p_view():
+        v = pview_filtered()
+        if len(v) == 0:
+            return render.DataGrid(pd.DataFrame({"": ["nothing for these filters"]}), width="100%")
+        return render.DataGrid(v[wiring_view.VIEW_COLUMNS].astype(str), height="auto", width="100%")
+
+    @render.download(filename="Pending_admin_data_view.xlsx")
+    def p_dl_view():
+        v = pview_filtered()
+        buf = io.BytesIO()
+        v[wiring_view.VIEW_COLUMNS].to_excel(buf, index=False, sheet_name="Pending view")
+        yield buf.getvalue()
 
     @render.data_frame
     def p_table():
@@ -1151,14 +1206,21 @@ def server(input, output, session):
                              ui.p("The rounds of the lookup (GPEI) whose admin data are not in the live file 15 days after their planned start date. "
                                   "Read from the last inspection; 'Refresh the pending list' rebuilds it from the newest live file. Nothing is sent to the countries.",
                                   class_="note"),
-                             ui.output_ui("pend_tiles"),
                              ui.layout_columns(
-                                 ui.input_select("p_sheet", "Show", choices=PEND_SHEETS, selected="Pending_now", width="100%"),
                                  ui.input_select("p_country", "Country", choices=["All"], width="100%"),
-                                 ui.div(ui.input_action_button("p_refresh", "Refresh the pending list", class_="btn-who"),
-                                        ui.download_button("p_dl", "Pending admin data (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
-                                        style="margin-top:32px;"),
-                                 col_widths=[5, 3, 4]),
+                                 ui.input_select("p_status", "Status", choices=["All", "Pending", "Not due yet", "To check", "Other date in live", "Received, not in live"], width="100%"),
+                                 ui.input_select("p_year", "Year of the start date", choices=["All"], width="100%"),
+                                 ui.input_select("p_month", "Month", choices=["All"] + MONTHS, width="100%"),
+                                 ui.input_numeric("p_last", "Last X months (0 = all)", 0, min=0, max=120, width="100%"),
+                                 col_widths=[2, 3, 2, 2, 3]),
+                             ui.output_ui("pend_tiles"),
+                             ui.output_data_frame("p_view"),
+                             ui.div(ui.input_action_button("p_refresh", "Refresh the pending list", class_="btn-who"),
+                                    ui.download_button("p_dl_view", "Download this view (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
+                                    ui.download_button("p_dl", "All sheets (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
+                                    style="margin:10px 0 14px;"),
+                             ui.h5("Other lists"),
+                             ui.input_select("p_sheet", "Show", choices=PEND_SHEETS, selected="Pending_now", width="100%"),
                              ui.output_data_frame("p_table"),
                              ui.h5("By country", style="margin-top:14px;"), ui.output_data_frame("p_bycountry"),
                              ui.div(ui.h5("Close a round"),
