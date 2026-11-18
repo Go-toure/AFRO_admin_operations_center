@@ -57,6 +57,17 @@ the repairs), the runs (the big files only of the last published build) and the 
 It can be run again; files already there are skipped. It reads the SharePoint credentials from
 `SharePoint_version_backup/config/secrets.env` and never prints them.
 
+### 3b. The geo reference and the scope files (once)
+
+The scope refresh reads the geo reference from `geo_reference/` of the store, so it needs no other folder:
+
+```
+python tools/seed_geo.py --geo-repo <the AFRO-Geo-Reference folder>
+```
+
+The scope refresh itself needs R on the machine that runs it (the hosting service has none: run it from the PC with `python run_local.py`).
+Everything else in the Lookup & wiring tab runs on the hosting service too.
+
 ## 4. Make the users
 
 ```

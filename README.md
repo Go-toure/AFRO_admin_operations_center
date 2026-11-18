@@ -83,10 +83,35 @@ The repository is public, so it holds no data, no secret, no SharePoint link and
 environment variables (see `DEPLOY.md`). Always sync the engine with `python tools/sync_engine.py --strip-links` and
 run `python tools/sync_engine.py --check-public` before pushing.
 
-## Run it locally / test
+## Run it on a PC (Positron) - and in the cloud, the same code
+
+The app reads only this repository and the SharePoint folder. Nothing is read from another repository or folder, so the code that runs on a PC
+is the code that runs on Posit Connect Cloud.
 
 ```
 pip install -r requirements.txt
+python tools/make_env.py            # once: writes the git-ignored file .env (the same names as the cloud Variables) from the settings already on the PC
+python run_local.py --check         # says which settings are present (never their values)
+python run_local.py                 # starts the app on http://127.0.0.1:8765 (in Positron: open app.py, Run Shiny App)
+```
+
+Without `OPS_USERS` the person at the keyboard is the operator (no sign-in page). The work files are kept in `ops_work/` (git-ignored).
+
+### Scope refresh and lookup wiring (tab Lookup & wiring)
+
+* `scope_pipeline/` holds what the scope refresh runs: the GPEI fetch (`gpei_fetch.py`), the R build with the geo-reference standardization
+  (`build_scope_file.R`) and the GPEI round facts (`enrich_scope.py`). The button 'Refresh the scope' runs them, checks the result (rows, geo_code
+  columns) and saves `scope_.csv` in `inputs/` of the SharePoint folder, and the GPEI files in `scope/`.
+* The geo reference (names and crosswalks) is read from `geo_reference/` of the SharePoint folder. Copy it once, and again when the geo reference
+  changes: `python tools/seed_geo.py --geo-repo <the AFRO-Geo-Reference folder>`.
+* Needs R (Rscript, with the packages of `build_scope_file.R`) on the machine that runs the app and `GPEI_API_TOKEN` in the settings. The hosting
+  service has no R: run the refresh from the PC; everything else (propose, adopt, corrections preview, close pending rounds) runs anywhere.
+* 'Propose the lookup fixes' / 'Adopt' run `lookup-fix`; adopted lines go to `inputs/corrections.csv` and `inputs/lookup_overrides.csv` in the
+  SharePoint folder and are applied by every build. 'Close this round' marks a pending round as not expected.
+
+## Test
+
+```
 python -m shiny run app.py                           # needs the variables of DEPLOY.md
 ```
 

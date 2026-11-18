@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 from shiny import App, reactive, render, ui
 
-from opscenter import __version__, auth, config, explore, guide, overview, pipelines, submissions_view
+from opscenter import __version__, auth, config, explore, guide, overview, pipelines, scope_refresh, submissions_view, wiring_view
 from opscenter.jobs import JobManager
 from opscenter.store import Store, StoreError
 from opscenter.workspace import Workspace
@@ -106,6 +106,7 @@ def server(input, output, session):
     last_find = reactive.value(None)
     rules_text = reactive.value("")
     subs = reactive.value(None)
+    wiring = reactive.value(None)
 
     # ---------------------------------------------------------------- login
     @render.text
@@ -122,6 +123,18 @@ def server(input, output, session):
             ov_task()
             rules_task()
             subs_task()
+            wiring_task()
+
+    @reactive.effect
+    def _auto_login():
+        """On a PC without OPS_USERS (Positron / run_local.py): the person at the keyboard is the operator, no sign-in page."""
+        if config.LOCAL_LOGIN and user() is None:
+            with reactive.isolate():
+                user.set(dict(config.LOCAL_USER))
+                ov_task()
+                rules_task()
+                subs_task()
+                wiring_task()
 
     @reactive.effect
     @reactive.event(input.logout)
@@ -183,6 +196,20 @@ def server(input, output, session):
         elif subs_task.status() == "error":
             ui.notification_show("Could not read the submissions: %s" % subs_task.error(), type="error", duration=12)
 
+    @reactive.extended_task
+    async def wiring_task():
+        def work():
+            store = get_store()
+            return wiring_view.load(store, get_ws(store))
+        return await asyncio.to_thread(work)
+
+    @reactive.effect
+    def _wiring_done():
+        if wiring_task.status() == "success":
+            wiring.set(wiring_task.result())
+        elif wiring_task.status() == "error":
+            ui.notification_show("Could not read the lookup and wiring files: %s" % wiring_task.error(), type="error", duration=12)
+
     @reactive.effect
     @reactive.event(input.refresh)
     def _refresh():
@@ -191,6 +218,7 @@ def server(input, output, session):
             return
         ov_task()
         subs_task()
+        wiring_task()
 
     # ---------------------------------------------------------------- jobs
     def is_operator():
@@ -397,6 +425,155 @@ def server(input, output, session):
                 if user() is not None:
                     ov_task()
                     subs_task()
+                    wiring_task()
+
+    # ---------------------------------------------------------------- scope and lookup wiring
+    @reactive.effect
+    @reactive.event(input.w_scope)
+    def _w_scope():
+        mode = input.w_mode()
+        if mode not in scope_refresh.MODES:
+            mode = "scope"
+        start("Refresh the scope (%s)" % mode, pipelines.make_scope_refresh(mode))
+
+    @reactive.effect
+    @reactive.event(input.w_propose)
+    def _w_propose():
+        start("Propose the lookup fixes", pipelines.p_lookup_propose)
+
+    @reactive.effect
+    @reactive.event(input.w_corr)
+    def _w_corr():
+        start("Preview the decided corrections", pipelines.p_corrections_preview)
+
+    @reactive.effect
+    @reactive.event(input.w_adopt)
+    def _w_adopt():
+        if not is_operator() or JM.busy():
+            start("Adopt the lookup fixes", pipelines.make_lookup_adopt())      # shows the usual message
+            return
+        ui.modal_show(ui.modal(
+            ui.p("This writes the proposed fixes as decided lines into corrections.csv (a live campaign renamed to the lookup name) and "
+                 "lookup_overrides.csv (a round added to the lookup, a campaign entered twice removed), saves both to the SharePoint folder "
+                 "and keeps the old files as .bak copies. Nothing in the live file changes now: the next Build applies the lines."),
+            ui.p("Review the proposals first (Propose the lookup fixes, then the tables below). Only the lines the evidence decides are adopted; "
+                 "the others stay listed as 'review'."),
+            title="Adopt the proposed fixes?", easy_close=True,
+            footer=ui.TagList(ui.modal_button("Cancel"), ui.input_action_button("w_adopt_yes", "Yes, adopt them", class_="btn-who"))))
+
+    @reactive.effect
+    @reactive.event(input.w_adopt_yes)
+    def _w_adopt_go():
+        ui.modal_remove()
+        start("Adopt the lookup fixes", pipelines.make_lookup_adopt())
+
+    @reactive.effect
+    @reactive.event(input.w_close)
+    def _w_close():
+        d = wiring()
+        key = input.w_round()
+        if not d or not key:
+            ui.notification_show("Choose a pending round first.", type="warning")
+            return
+        start("Close the pending round %s" % key, pipelines.make_pending_close(key, (input.w_note() or "").strip()))
+
+    def wgrid(name, cap=300):
+        d = wiring()
+        df = (d or {}).get(name)
+        if df is None or len(df) == 0:
+            return render.DataGrid(pd.DataFrame({"": ["nothing"]}), width="100%")
+        return render.DataGrid(df.head(cap).astype(str), height="auto", width="100%")
+
+    @render.data_frame
+    def w_issues():
+        return wgrid("issues")
+
+    @render.data_frame
+    def w_accepted():
+        return wgrid("accepted")
+
+    @render.data_frame
+    def w_pcorr():
+        return wgrid("p_corr")
+
+    @render.data_frame
+    def w_pchg():
+        return wgrid("p_chg")
+
+    @render.data_frame
+    def w_pskip():
+        return wgrid("p_skip")
+
+    @render.data_frame
+    def w_pending():
+        return wgrid("pending")
+
+    @render.download(filename="lookup_fix_proposals.xlsx")
+    def w_dl_prop():
+        yield (get_ws().workspace / "submissions" / "lookup_fix_proposals.xlsx").read_bytes()
+
+    @render.ui
+    def wiring_ui():
+        d = wiring()
+        op = is_operator()
+        if d is None:
+            return ui.p("Reading the lookup and wiring files ... (one moment)", class_="note")
+        st = d["scope_status"]
+        sc = d["scope_in_store"]
+        needs = ui.tags.ul(*[ui.tags.li(("met: " if ok else "MISSING: ") + n + ("" if ok else " - " + why)) for n, ok, why in st["items"]])
+        scope_card = ui.div(
+            ui.h5("1  Scope"),
+            ui.p("The scope file lists the districts each GPEI round plans (with the standardized geo codes). The refresh reads the GPEI API, "
+                 "runs R with the geo reference kept in the SharePoint folder (geo_reference/), adds the GPEI round facts, then saves scope_.csv in "
+                 "the inputs of the SharePoint folder, where the engine reads it. Nothing is published. It needs R on the machine that runs the "
+                 "app: run it from the PC.", class_="note"),
+            ui.p(ui.strong("In the SharePoint folder: "),
+                 ("scope_.csv, %.1f MB, saved %s" % (sc["size"] / 1024 ** 2, sc["modified"])) if sc else "no scope_.csv yet"),
+            needs,
+            ui.input_select("w_mode", "What to run", choices=dict(scope_refresh.MODES), width="100%"),
+            (ui.input_action_button("w_scope", "Refresh the scope", class_="btn-who") if op else ui.span("operators only", class_="note")),
+            ui.p("" if st["ready"] else "Some needs are missing, so the job will stop at once and say which.", class_="note"),
+            class_="stepcard")
+        prop_btns = ui.div(
+            ui.input_action_button("w_propose", "Propose the lookup fixes", class_="btn-who"),
+            ui.input_action_button("w_adopt", "Adopt the proposed fixes", class_="btn-outline-danger", style="margin-left:8px;"),
+            ui.input_action_button("w_corr", "Preview the decided corrections", class_="btn-outline-secondary", style="margin-left:8px;"),
+            (ui.download_button("w_dl_prop", "Proposals (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;") if d["has_proposals"] else ui.span()),
+        ) if op else ui.p("Only operators propose, adopt or close.", class_="note")
+        cl, ov_ = d["corrections_lines"], d["overrides_lines"]
+        wire_card = ui.div(
+            ui.h5("2  Lookup wiring"),
+            ui.p("Where the live file names a campaign or round that the lookup does not have, the engine looks for evidence in the scope and the GPEI round "
+                 "windows. 'Propose' lists what the evidence supports (nothing changes). 'Adopt' writes it as decided lines that every build applies. "
+                 "A round inside its GPEI window, or within 35 days of it and matching its districts, is accepted and not an issue.", class_="note"),
+            ui.p(ui.strong("Decided now: "),
+                 "%s correction line(s), %s lookup change(s)." % ("?" if cl is None else cl, "?" if ov_ is None else ov_)),
+            prop_btns, class_="stepcard", style="margin-top:14px;")
+        pend = d["pending"]
+        choices = {}
+        if len(pend):
+            for _, r in pend.iterrows():
+                choices[wiring_view.round_key(r)] = "%s | %s | %s (planned %s)" % (r["Country"], r["Campaign"], r["Round"], str(r["Planned_start"])[:10])
+        close_card = ui.div(
+            ui.h5("4  Pending rounds"),
+            ui.p("Rounds of the lookup with nothing received 15 days after their start. Close a round that did not take place or whose data are not expected; "
+                 "it leaves the pending list and the country feedback. The decision is kept in the SharePoint folder.", class_="note"),
+            ui.output_data_frame("w_pending"),
+            ((ui.div(ui.input_select("w_round", "Round to close", choices=choices, width="100%"),
+                     ui.input_text("w_note", "Why (kept with the decision)", width="100%"),
+                     ui.input_action_button("w_close", "Close this round", class_="btn-outline-danger"), style="margin-top:10px;"))
+             if (op and choices) else ui.span()),
+            class_="stepcard", style="margin-top:14px;")
+        return ui.div(
+            scope_card, wire_card,
+            ui.h5("3  What the last inspection and proposal found", style="margin-top:14px;"),
+            ui.p("Read from the last 'Inspect the submissions' and 'Propose the lookup fixes'. Run them again after a scope refresh.", class_="note"),
+            ui.h6("Lookup issues (rounds in the live file the lookup cannot place)"), ui.output_data_frame("w_issues"),
+            ui.h6("Accepted by the GPEI round window", style="margin-top:12px;"), ui.output_data_frame("w_accepted"),
+            ui.h6("Proposed: live campaign renamed to the lookup name", style="margin-top:12px;"), ui.output_data_frame("w_pcorr"),
+            ui.h6("Proposed: changes to the lookup", style="margin-top:12px;"), ui.output_data_frame("w_pchg"),
+            ui.h6("Not proposed (needs a person)", style="margin-top:12px;"), ui.output_data_frame("w_pskip"),
+            close_card)
 
     # ---------------------------------------------------------------- explore
     @reactive.extended_task
@@ -807,6 +984,7 @@ def server(input, output, session):
                 ui.nav_panel("Overview", ui.output_ui("overview_ui")),
                 ui.nav_panel("Cycle", ui.output_ui("cycle_ui")),
                 ui.nav_panel("Submissions", ui.output_ui("subs_ui")),
+                ui.nav_panel("Lookup & wiring", ui.output_ui("wiring_ui")),
                 ui.nav_panel("Explore",
                              ui.layout_columns(
                                  ui.input_select("x_source", "Source", choices={"live": "live file"}),

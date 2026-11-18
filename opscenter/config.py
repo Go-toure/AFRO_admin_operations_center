@@ -1,10 +1,14 @@
-"""All settings come from environment variables (on Posit Connect Cloud: Variables in the content settings).
-Nothing secret, no SharePoint link and no data is stored in this repository."""
+"""All settings come from environment variables (on Posit Connect Cloud: Variables in the content settings; on a PC: see localenv.py, which fills
+the environment from files that already exist on the machine). Nothing secret, no SharePoint link and no data is stored in this repository."""
 import json
 import os
 from pathlib import Path
 
+from . import localenv
+
 HERE = Path(__file__).resolve().parent.parent
+localenv.load()
+LOCAL = os.environ.get("OPS_LOCAL") == "1"          # running on a PC (Positron / run_local.py), not on the hosting service
 
 # SharePoint access (the same app registration the publish script and the backup tool use)
 TENANT = os.environ.get("SHAREPOINT_TENANT_ID", "").strip()
@@ -21,7 +25,7 @@ SUBMISSIONS_URL = os.environ.get("OPS_SUBMISSIONS_SHARE_URL", "").strip()   # Ad
 PUBLIC_URL = os.environ.get("OPS_PUBLIC_URL", "").strip()
 
 # Local scratch space (the cloud disk is not permanent: everything important is in the SharePoint folder)
-WORKDIR = Path(os.environ.get("OPS_WORKDIR", "/tmp/ops"))
+WORKDIR = Path(os.environ.get("OPS_WORKDIR") or (HERE / "ops_work" if LOCAL else "/tmp/ops"))
 
 # Test hooks: the same variables the publish script reads
 GRAPH = os.environ.get("PUBLISH_GRAPH_BASE", "https://graph.microsoft.com/v1.0")
@@ -34,7 +38,7 @@ USERS_JSON = os.environ.get("OPS_USERS", "{}")
 
 LOCK_MINUTES = int(os.environ.get("OPS_LOCK_MINUTES", "90"))      # a job holding the lock for longer is considered dead
 MIN_BUILD_GB = float(os.environ.get("OPS_MIN_BUILD_GB", "5"))     # a build peaks at about 4 GB of memory
-SKIP_MEMORY_CHECK = os.environ.get("OPS_SKIP_MEMORY_CHECK", "") == "1"
+SKIP_MEMORY_CHECK = os.environ.get("OPS_SKIP_MEMORY_CHECK", "1" if LOCAL else "") == "1"      # a PC has the memory a build needs
 KEEP_BACKUPS = int(os.environ.get("OPS_KEEP_BACKUPS", "3"))       # backups of the live file kept on SharePoint (the PC keeps all)
 KEEP_DICT_COPIES = int(os.environ.get("OPS_KEEP_DICT_COPIES", "3"))  # earlier live dictionaries kept on SharePoint
 SUBMISSION_MAX_MB = int(os.environ.get("OPS_SUBMISSION_MAX_MB", "60"))   # a file in the submissions folder larger than this is not read
@@ -54,11 +58,16 @@ def load_users():
         return {}
 
 
+# On a PC with no OPS_USERS the person at the keyboard is the operator (the app only listens on this machine). With OPS_USERS set, the sign-in is used.
+LOCAL_LOGIN = LOCAL and not load_users()
+LOCAL_USER = {"id": "local", "name": os.environ.get("OPS_LOCAL_NAME") or os.environ.get("USERNAME") or os.environ.get("USER") or "operator", "role": "operator"}
+
+
 def missing_settings():
     """Names of the variables that must be set for the app to work."""
     need = {"SHAREPOINT_TENANT_ID": TENANT, "SHAREPOINT_CLIENT_ID": CLIENT, "SHAREPOINT_CLIENT_SECRET": SECRET,
             "OPS_STORE_SHARE_URL": STORE_URL, "OPS_ADMIN_SHARE_URL": ADMIN_URL, "OPS_DICT_SHARE_URL": DICT_URL}
     miss = [k for k, v in need.items() if not v]
-    if not load_users():
+    if not load_users() and not LOCAL_LOGIN:
         miss.append("OPS_USERS")
     return miss

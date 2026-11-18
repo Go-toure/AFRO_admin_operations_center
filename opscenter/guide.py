@@ -99,6 +99,7 @@ SECTIONS = [
         ("Overview", "the live file, the newest build, the backups and who did what last."),
         ("Cycle", "the steps above. Operators only, except the backup."),
         ("Submissions", "inspect the files of the countries, read the report, accept or reject each file."),
+        ("Lookup & wiring", "refresh the scope (on the PC, needs R), propose and adopt the lookup fixes, preview the corrections, close pending rounds."),
         ("Explore", "find records in the live file, a build or a backup by country, province, district, Response, round or date."),
         ("Quality & compare", "inspect a version, find duplicates, compare two versions column by column."),
         ("Files & feedback", "download the files of a build and the feedback or fix list of one country."),

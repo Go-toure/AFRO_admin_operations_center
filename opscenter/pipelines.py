@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 
-from . import config
+from . import config, scope_refresh
 from .jobs import StepFailed
 from .store import Store
 
@@ -332,4 +332,63 @@ def make_compare(a, b):
         ensure_source(ctx, a)
         ensure_source(ctx, b)
         admin_ok(ctx, "compare", a, b)
+    return p
+
+
+# ----------------------------------------------------------------------------------------------- scope and wiring
+def make_scope_refresh(mode="scope"):
+    @operator_only
+    def p(ctx):
+        """Refresh the scope file with the scope folder's own script (R + AFRO-Geo-Reference), then copy it to the inputs of the
+        SharePoint folder. Only on the PC: the hosting service has no R."""
+        scope_refresh.run(ctx, mode)
+    return p
+
+
+@operator_only
+def p_lookup_propose(ctx):
+    """Lists the corrections and lookup changes the evidence (live file, lookup, scope, GPEI round windows) supports. Changes nothing but the
+    proposals file (workspace/submissions/lookup_fix_proposals.xlsx)."""
+    ensure_inputs(ctx)
+    need(ctx, (ctx.ws.inputs / "scope_.csv").is_file(), "inputs/scope_.csv is not in the SharePoint folder: refresh the scope first.")
+    step_backup(ctx)
+    admin_ok(ctx, "lookup-fix", "propose")
+
+
+def make_lookup_adopt():
+    @operator_only
+    def p(ctx):
+        """Writes the proposals as decided lines into corrections.csv and lookup_overrides.csv (old files kept as .bak) and saves both to
+        the SharePoint folder. The next build applies them."""
+        ensure_inputs(ctx)
+        need(ctx, (ctx.ws.inputs / "scope_.csv").is_file(), "inputs/scope_.csv is not in the SharePoint folder: refresh the scope first.")
+        step_backup(ctx)
+        try:
+            admin_ok(ctx, "lookup-fix", "adopt", "--by", ctx.user["name"])
+        finally:
+            ctx.ws.push_decisions(ctx.emit)
+    return p
+
+
+@operator_only
+def p_corrections_preview(ctx):
+    """What the decided corrections would change in the live file. Nothing is changed."""
+    ensure_inputs(ctx)
+    step_backup(ctx)
+    admin_ok(ctx, "corrections")
+
+
+def make_pending_close(target, note):
+    @operator_only
+    def p(ctx):
+        """Marks a round of the pending list as closed (it did not take place, or no data are expected), then refreshes the pending list."""
+        need(ctx, target, "Choose a round first.")
+        ensure_inputs(ctx)
+        step_backup(ctx)
+        ctx.ws.pull_submissions()
+        args = ["submissions", "pending", "--close", target, "--by", ctx.user["name"]]
+        if note:
+            args += ["--note", note]
+        admin_ok(ctx, *args)
+        admin_ok(ctx, "submissions", "pending", "--no-pull")
     return p

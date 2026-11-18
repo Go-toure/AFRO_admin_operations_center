@@ -37,6 +37,8 @@ class Workspace:
         self.inputs = r / "inputs"
         self.engine = r / "engine"
         self.logs = r / "logs"
+        self.scope_home = r / "scope_home"          # the scope refresh works here (data/, logs/); the files it keeps are in scope/ of the SharePoint folder
+        self.geo = r / "geo_reference"              # copy of geo_reference/ of the SharePoint folder (names and crosswalks, read only)
         self.sigfile = r / "sync_state.json"
         try:
             self.sig = {k: tuple(v) for k, v in json.loads(self.sigfile.read_text(encoding="utf-8")).items()}
@@ -45,7 +47,8 @@ class Workspace:
         self.maps = [("catalog", self.backup_repo / "catalog"), ("snapshots", self.backup_repo / "snapshots"),
                      ("runs", self.workspace / "runs"), ("dictionary_backups", self.workspace / "dictionary_backups"),
                      ("inspect", self.workspace / "inspect"), ("compare", self.workspace / "compare"),
-                     ("submissions", self.workspace / "submissions"), ("inputs", self.inputs)]
+                     ("submissions", self.workspace / "submissions"), ("inputs", self.inputs),
+                     ("scope", self.scope_home / "data"), ("geo_reference", self.geo)]
         self.single = {"state.json": self.workspace / "state.json"}
         self.available = {}        # run number -> file names in the SharePoint folder (filled by pull_light)
 
@@ -295,14 +298,14 @@ class Workspace:
     # ------------------------------------------------------------------ push
     def _local_files(self):
         for prefix, base in self.maps:
-            if prefix == "inputs":
-                continue                      # inputs are put there by hand / the seed script, never by a job
+            if prefix in ("inputs", "geo_reference"):
+                continue                      # inputs and the geo reference are put there by hand / the seed scripts, never by a job
             if not base.is_dir():
                 continue
             for root, dirs, files in os.walk(base):
                 dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
                 for f in files:
-                    if f.endswith(SKIP_SUFFIX):
+                    if f.endswith(SKIP_SUFFIX) or (prefix == "scope" and f == "scope_.csv"):    # scope_.csv goes to inputs/ (push_input)
                         continue
                     p = Path(root) / f
                     yield prefix + "/" + p.relative_to(base).as_posix(), p
@@ -324,6 +327,49 @@ class Workspace:
         self.save_sig()
         if emit:
             emit("   saved to SharePoint: inputs/lookup.xlsx (the refreshed lookup)")
+        return True
+
+    def push_decisions(self, emit=None):
+        """The decided files of the wiring (inputs/corrections.csv, inputs/lookup_overrides.csv), when a job changed them. Like the lookup,
+        they are the inputs that a job may write back; the other inputs never are."""
+        sent = []
+        for name in ("corrections.csv", "lookup_overrides.csv"):
+            p = self.inputs / name
+            if not p.is_file():
+                continue
+            st = p.stat()
+            if self.sig.get(str(p)) == (st.st_size, st.st_mtime_ns):
+                continue
+            self.store.put("inputs/" + name, p)
+            self._remember(p)
+            sent.append(name)
+            if emit:
+                emit("   saved to SharePoint: inputs/%s (the decided lines)" % name)
+        if sent:
+            self.save_sig()
+        return sent
+
+    def push_input(self, name, src, emit=None):
+        """Copy a file made on the PC into the inputs of the SharePoint folder (the scope file after a refresh). Nothing is sent when the
+        folder already holds the same bytes. Returns True when it was sent."""
+        raw = Path(src).read_bytes()
+        dst = self.inputs / name
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        old = self.store.get("inputs/" + name)
+        if old is not None and old == raw:
+            dst.write_bytes(raw)
+            self._remember(dst)
+            self.save_sig()
+            if emit:
+                emit("   inputs/%s in the SharePoint folder is already the same file: nothing sent" % name)
+            return False
+        dst.write_bytes(raw)
+        self.store.put("inputs/" + name, dst)
+        self._remember(dst)
+        self.save_sig()
+        self.write_settings()
+        if emit:
+            emit("   saved to SharePoint: inputs/%s (%.1f MB)" % (name, len(raw) / 1024 ** 2))
         return True
 
     def push_changes(self, emit=None):

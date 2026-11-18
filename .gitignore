@@ -9,3 +9,4 @@ secrets.env
 /logs/
 rsconnect/
 .DS_Store
+/engine/logs/
