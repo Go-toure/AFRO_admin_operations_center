@@ -676,7 +676,7 @@ def server(input, output, session):
         v = pview_filtered()
         if len(v) == 0:
             return render.DataGrid(pd.DataFrame({"": ["nothing for these filters"]}), width="100%")
-        return render.DataGrid(v[wiring_view.GRID_COLUMNS].astype(str), height="auto", width="100%")
+        return render.DataGrid(v[wiring_view.GRID_COLUMNS].astype(str), height="460px", width="100%")
 
     @render.ui
     def p_note():
@@ -706,7 +706,7 @@ def server(input, output, session):
         df = pend_df(sheet)
         if len(df) == 0:
             return render.DataGrid(pd.DataFrame({"": ["nothing"]}), width="100%")
-        return render.DataGrid(df.head(500).astype(str), height="auto", width="100%")
+        return render.DataGrid(df.head(500).astype(str), height="380px", width="100%")
 
     @render.data_frame
     def p_bycountry():
@@ -714,7 +714,7 @@ def server(input, output, session):
         df = ((d or {}).get("pend_all") or {}).get("By_country")
         if df is None or len(df) == 0:
             return render.DataGrid(pd.DataFrame({"": ["nothing"]}), width="100%")
-        return render.DataGrid(df.astype(str), height="auto", width="100%")
+        return render.DataGrid(df.astype(str), height="320px", width="100%")
 
     @render.download(filename="Pending_admin_data.xlsx")
     def p_dl():
@@ -1232,17 +1232,18 @@ def server(input, output, session):
                                     ui.download_button("p_dl_view", "Download this view (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
                                     ui.download_button("p_dl", "All sheets (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
                                     style="margin:10px 0 14px;"),
-                             ui.h5("Other lists"),
-                             ui.input_select("p_sheet", "Show", choices=PEND_SHEETS, selected="Pending_now", width="100%"),
-                             ui.output_data_frame("p_table"),
-                             ui.h5("By country", style="margin-top:14px;"), ui.output_data_frame("p_bycountry"),
-                             ui.div(ui.h5("Close a round"),
-                                    ui.p("A round that did not take place, or whose data are not expected, can be closed: it leaves this list and the country "
-                                         "feedback. The decision is kept in the SharePoint folder. Operators only.", class_="note"),
-                                    ui.input_select("w_round", "Round (from 'Pending now')", choices={}, width="100%"),
-                                    ui.input_text("w_note", "Why (kept with the decision)", width="100%"),
-                                    ui.input_action_button("w_close", "Close this round", class_="btn-outline-danger"),
-                                    class_="stepcard", style="margin-top:14px;")),
+                             ui.accordion(
+                                 ui.accordion_panel("Other lists (pending now, to check, resolved, closed, older rounds, lookup issues ...)",
+                                                    ui.input_select("p_sheet", "Show", choices=PEND_SHEETS, selected="Pending_now", width="100%"),
+                                                    ui.output_data_frame("p_table")),
+                                 ui.accordion_panel("By country", ui.output_data_frame("p_bycountry")),
+                                 ui.accordion_panel("Close a round",
+                                                    ui.p("A round that did not take place, or whose data are not expected, can be closed: it leaves this list and the country "
+                                                         "feedback. The decision is kept in the SharePoint folder. Operators only.", class_="note"),
+                                                    ui.input_select("w_round", "Round (from 'Pending now')", choices={}, width="100%"),
+                                                    ui.input_text("w_note", "Why (kept with the decision)", width="100%"),
+                                                    ui.input_action_button("w_close", "Close this round", class_="btn-outline-danger")),
+                                 id="p_more", open=False, class_="mt-3")),
                 ui.nav_panel("Explore & quality", ui.navset_pill(
                 ui.nav_panel("Find records",
                              ui.layout_columns(
