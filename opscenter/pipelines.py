@@ -227,13 +227,14 @@ def p_publish(ctx):
     last_step_cleanup(ctx)
 
 
-def make_all(dup="none"):
+def make_all(dup="none", scope_mode="due"):
     @operator_only
     def p(ctx):
         """inspect the submissions -> build -> check -> values -> publish, all in one go (the run files stay on this server meanwhile).
         The inspection comes first so that the files that arrived since the last one are in this build; without a submissions folder it is skipped."""
+        step_scope(ctx, scope_mode)
         if config.SUBMISSIONS_URL:
-            ctx.emit("=== Step 1: inspect the submissions (the files that arrived since the last inspection are in this build) ===")
+            ctx.emit("=== Step 2: inspect the submissions (the files that arrived since the last inspection are in this build) ===")
             step_inspect(ctx)
             ctx.ws.push_changes(ctx.emit)
         step_build(ctx, dup)
@@ -424,6 +425,25 @@ def scope_age_days(ctx):
     return None
 
 
+def step_scope(ctx, scope_mode="due"):
+    """Refresh the scope when it is due (older than OPS_SCOPE_MAX_AGE_DAYS, or always, or never) and the machine can do it (R). Otherwise the
+    cycle goes on with the scope in the SharePoint folder."""
+    if scope_mode == "never":
+        ctx.emit("Scope: not refreshed (your choice).")
+        return
+    age = scope_age_days(ctx)
+    ctx.emit("Scope file in the SharePoint folder: %s" % ("none" if age is None else "%d day(s) old" % age))
+    due = scope_mode == "always" or age is None or age >= config.SCOPE_MAX_AGE_DAYS
+    if not due:
+        ctx.emit("Scope: not due, it is kept.")
+    elif scope_refresh.status()["ready"]:
+        ctx.emit("=== Step 1: refresh the scope ===")
+        scope_refresh.run(ctx, "scope")
+    else:
+        ctx.emit("Scope: due but it cannot be refreshed on this machine (%s): the cycle goes on with the scope in SharePoint." %
+                 "; ".join(n for n, ok, _ in scope_refresh.status()["items"] if not ok))
+
+
 def banner(ctx, n, total, text):
     ctx.emit("")
     ctx.emit("=== AUTOPILOT step %d of %d: %s ===" % (n, total, text))
@@ -502,17 +522,8 @@ def make_autopilot(dup="none", scope_mode="due", publish=True):
         published = False
         try:
             banner(ctx, 1, total, "scope")
-            age = scope_age_days(ctx)
-            ctx.emit("Scope file in the SharePoint folder: %s" % ("none" if age is None else "%d day(s) old" % age))
-            due = scope_mode == "always" or (scope_mode == "due" and (age is None or age >= config.SCOPE_MAX_AGE_DAYS))
-            if due and scope_refresh.status()["ready"]:
-                stage = "scope refresh"
-                scope_refresh.run(ctx, "scope")
-            elif due:
-                ctx.emit("The scope is due but cannot be refreshed here (%s): the cycle goes on with the scope in SharePoint." %
-                         "; ".join(n for n, ok, _ in scope_refresh.status()["items"] if not ok))
-            else:
-                ctx.emit("Not due: the scope is kept.")
+            stage = "scope refresh"
+            step_scope(ctx, scope_mode)
             banner(ctx, 2, total, "inspect the submissions (automatic rules)")
             stage = "inspect"
             if config.SUBMISSIONS_URL:

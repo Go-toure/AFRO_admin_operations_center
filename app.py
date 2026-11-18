@@ -302,14 +302,20 @@ def server(input, output, session):
         if mode not in ("complete", "first"):
             mode = "none"
         title = "Build the next version" if kind == "build" else "Run the whole cycle"
-        make = pipelines.make_build if kind == "build" else pipelines.make_all
+        try:
+            scope_mode = input.c_scope()
+        except Exception:
+            scope_mode = "due"
+
+        def make(m):
+            return pipelines.make_build(m) if kind == "build" else pipelines.make_all(m, scope_mode)
         if mode == "none":
             start(title, make("none"))
             return
         if not is_operator() or JM.busy():
             start(title, make("none"))      # shows the usual 'operators only' / 'a job is running' message
             return
-        pending_dup.set((kind, mode))
+        pending_dup.set((kind, mode, scope_mode))
         ui.modal_show(ui.modal(
             ui.p("This build will remove the extra copy of every record that was entered twice (same names, same population and results), "
                  "keeping %s. Records with the same names but other figures are never removed." %
@@ -328,9 +334,9 @@ def server(input, output, session):
         pending_dup.set(None)
         if not p:
             return
-        kind, mode = p
+        kind, mode, scope_mode = p
         start(("Build the next version" if kind == "build" else "Run the whole cycle") + " (duplicates: %s)" % mode,
-              (pipelines.make_build if kind == "build" else pipelines.make_all)(mode))
+              pipelines.make_build(mode) if kind == "build" else pipelines.make_all(mode, scope_mode))
 
     @reactive.effect
     @reactive.event(input.j_build)
@@ -737,6 +743,11 @@ def server(input, output, session):
             ui.p("Every step runs on the server with the same engine as admin.py on the PC. Files are read from and saved to the "
                  "SharePoint folder, so nothing depends on this server staying up. Only one job runs at a time.", class_="note"),
             status, sub_note,
+            (ui.div(ui.h5("Scope"),
+                    ui.p("The scope is the evidence the engine uses to wire the campaigns of the live file to the lookup. Refreshing it takes 5 to 15 "
+                         "minutes and needs R (on the PC). The Autopilot and the whole-cycle button follow this choice.", class_="note"),
+                    ui.input_select("c_scope", None, choices=pipelines.SCOPE_CHOICES, selected="due", width="100%"),
+                    class_="stepcard") if op else ui.div()),
             (ui.div(ui.h5("Duplicates"),
                     ui.p("A record entered twice (same names, same population and results) is always listed in the quality report. "
                          "Choose here whether the Build and the whole cycle also remove the extra copy. Records with the same names but "
@@ -750,7 +761,6 @@ def server(input, output, session):
                           "accepted files added), the check, the check_dp values and the publish, then the pending list and the feedback of the "
                           "countries. It stops at the first problem and then nothing is published. At the end the log lists what is left for a "
                           "person (files no rule takes, rounds with nothing received). Nothing is sent to any country.", class_="note"),
-                     ui.input_select("c_scope", "Scope", choices=pipelines.SCOPE_CHOICES, selected="due", width="100%"),
                      ui.input_select("c_publish", "Publish", choices=pipelines.PUBLISH_CHOICES, selected="publish", width="100%"),
                      ui.input_action_button("j_auto", "Run the autopilot", class_="btn-who"),
                      ui.p("The duplicates choice above applies to the autopilot too.", class_="note"),
@@ -764,7 +774,7 @@ def server(input, output, session):
                 ui.div(
                     card("4  Store the check_dp values", "Writes the check_dp values into the file (no Excel needed).", "j_values", "Store values"),
                     card("5  Publish", "Replaces the data file and then the data dictionary on SharePoint, keeps no version history there, backs up again. Stops if the live file changed since the build. Its last step cleans up the SharePoint folder (old versions, old builds and results, the recycle bin).", "j_publish", "Publish data + dictionary", True),
-                    card("All steps", "Inspect the submissions, build, check, store values and publish (with the clean-up) in one go. Stops at the first problem.", "j_all", "Run the whole cycle", True),
+                    card("All steps", "Refresh the scope if it is due, inspect the submissions, build, check, store values and publish (with the clean-up) in one go. Stops at the first problem.", "j_all", "Run the whole cycle", True),
                 ),
                 col_widths=[6, 6]),
         )
