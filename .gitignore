@@ -10,3 +10,4 @@ secrets.env
 rsconnect/
 .DS_Store
 /engine/logs/
+/_to_delete/

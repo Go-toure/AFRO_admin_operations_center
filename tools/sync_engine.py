@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -58,9 +59,20 @@ PUBLIC_PATTERNS = [
 ]
 
 
+def _files_to_check():
+    """What a push could publish: the files git tracks plus the new files it does not ignore (so the private .env and ops_work/ are not scanned).
+    Falls back to every file of the folder when git is not available."""
+    try:
+        out = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], cwd=str(HERE), capture_output=True,
+                             check=True).stdout.decode("utf-8", errors="replace")
+        return sorted(HERE / n for n in out.split("\0") if n)
+    except (OSError, subprocess.CalledProcessError):
+        return sorted(HERE.rglob("*"))
+
+
 def check_public():
     bad = 0
-    for p in sorted(HERE.rglob("*")):
+    for p in _files_to_check():
         if not p.is_file() or ".git" in p.parts or "__pycache__" in p.parts or p.suffix in (".pyc", ".xlsx", ".png"):
             continue
         if p.relative_to(HERE).parts[0] == "ops_work":      # private local run folder, ignored by git (users, logs, run files)
