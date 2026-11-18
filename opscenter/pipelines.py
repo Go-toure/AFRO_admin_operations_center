@@ -161,11 +161,11 @@ def step_build(ctx, dup="none"):
         ctx.ws.push_lookup(ctx.emit)    # a refreshed lookup is kept even when the build stops
 
 
-def step_check(ctx):
+def step_check(ctx, strict=False):
     n, _ = latest_run_any(ctx)
     ensure_run(ctx, n)
     ensure_inputs(ctx)
-    admin_ok(ctx, "check")
+    admin_ok(ctx, "check", *(["--strict"] if strict else []))
 
 
 def step_values(ctx):
@@ -452,7 +452,40 @@ def autopilot_report(ctx):
     ctx.emit("The feedback workbooks of the countries are ready in Submissions > Feedback (nothing was sent to any country).")
 
 
-def make_autopilot(dup="none", scope_mode="due"):
+PUBLISH_CHOICES = {
+    "publish": "Publish to SharePoint when every check passes",
+    "prepare": "Prepare only: stop before the publish, so a person reads the check report and presses Publish",
+}
+
+
+def autopilot_summary(ctx, published):
+    """What the run did to the live data, from the check of the newest build and the verification after the publish."""
+    runs = local_runs(ctx.ws)
+    if not runs:
+        return
+    n, m = runs[-1]
+    ctx.emit("")
+    ctx.emit("=== WHAT THE RUN DID TO THE DATA (v%d) ===" % n)
+    c = m.get("check", {})
+    for line in c.get("info", []):
+        ctx.emit("   " + line)
+    for w in c.get("warnings", []):
+        ctx.emit("   TO LOOK AT: " + w)
+    pub = m.get("published") or {}
+    if published and pub:
+        ctx.emit("   %s: %s" % ("VERIFIED" if pub.get("verified") else "NOT VERIFIED", pub.get("verify_message", "")))
+        ctx.emit("   data dictionary: %s" % pub.get("dictionary", "?"))
+    elif not published:
+        ctx.emit("   Prepared, NOT published: read the check report (Run tab > Files & feedback, or Check report) and press Publish when you agree.")
+
+
+def sub_ver(ctx):
+    """True when the manifest of the newest build says the live file was verified after the publish."""
+    runs = local_runs(ctx.ws)
+    return bool(runs and (runs[-1][1].get("published") or {}).get("verified"))
+
+
+def make_autopilot(dup="none", scope_mode="due", publish=True):
     @operator_only
     def p(ctx):
         """The whole cycle with no manual step: (scope if due) -> inspect the submissions (the automatic rules decide and fix what is safe) ->
@@ -494,17 +527,23 @@ def make_autopilot(dup="none", scope_mode="due"):
             stage = "values"
             admin_ok(ctx, "excel")
             ctx.ws.push_changes(ctx.emit)
-            banner(ctx, 6, total, "publish")
+            banner(ctx, 6, total, "publish" if publish else "publish (skipped: prepare only)")
             stage = "publish"
-            admin_ok(ctx, "publish")
-            published = True
-            last_step_cleanup(ctx)
+            if publish:
+                admin_ok(ctx, "publish")
+                published = True
+                last_step_cleanup(ctx)
+                if not (sub_ver(ctx)):
+                    ctx.emit("WARNING: the published file could not be verified: check it by hand.")
+            else:
+                ctx.emit("Not published: the build is ready; the live file on SharePoint is unchanged.")
             banner(ctx, 7, total, "refresh the pending list and the feedback")
             stage = "after the publish"
             if config.SUBMISSIONS_URL:
                 step_backup(ctx)                          # the new live file is the reference of the pending list
                 admin_ok(ctx, "submissions", "pending", "--no-pull")
                 admin_ok(ctx, "submissions", "feedback", "--no-pull")
+            autopilot_summary(ctx, published)
             autopilot_report(ctx)
         except StepFailed:
             ctx.emit("")

@@ -1,4 +1,4 @@
-e6e52639f8ad admin.py
+9fd266e80946 admin.py
 dca017071ce1 add_coadmin_columns.py
 20ad54e59ebc publish_admin_data.py
 c314211de6bc refresh_lookup.py

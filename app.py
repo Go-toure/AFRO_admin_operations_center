@@ -375,10 +375,17 @@ def server(input, output, session):
             scope_mode = input.c_scope()
         except Exception:
             scope_mode = "due"
-        pending_auto.set((mode, scope_mode))
+        try:
+            publish = input.c_publish() != "prepare"
+        except Exception:
+            publish = True
+        pending_auto.set((mode, scope_mode, publish))
         ui.modal_show(ui.modal(
             ui.p("The autopilot will run the whole cycle and PUBLISH the result to SharePoint (the data file and its dictionary) if the check passes. "
-                 "The live file is backed up first, and the cycle stops at the first problem without publishing."),
+                 "The live file is backed up first, and the cycle stops at the first problem without publishing. After the publish the live file is read "
+                 "back and compared with the build." if publish else
+                 "The autopilot will run the whole cycle up to the check and stop BEFORE the publish: the live file on SharePoint stays as it is, "
+                 "and you publish when you have read the check report."),
             ui.p(("It will also remove the extra copy of each duplicate record (%s). " % mode) if mode != "none" else "Duplicates are only listed, none removed. ",
                  "Scope: %s." % pipelines.SCOPE_CHOICES.get(scope_mode, scope_mode)),
             title="Run the autopilot?", easy_close=True,
@@ -391,7 +398,7 @@ def server(input, output, session):
         p = pending_auto()
         pending_auto.set(None)
         if p:
-            start("Autopilot (duplicates: %s, scope: %s)" % p, pipelines.make_autopilot(*p))
+            start("Autopilot (duplicates: %s, scope: %s, %s)" % (p[0], p[1], "publish" if p[2] else "prepare only"), pipelines.make_autopilot(*p))
 
     @reactive.effect
     @reactive.event(input.s_inspect)
@@ -744,6 +751,7 @@ def server(input, output, session):
                           "countries. It stops at the first problem and then nothing is published. At the end the log lists what is left for a "
                           "person (files no rule takes, rounds with nothing received). Nothing is sent to any country.", class_="note"),
                      ui.input_select("c_scope", "Scope", choices=pipelines.SCOPE_CHOICES, selected="due", width="100%"),
+                     ui.input_select("c_publish", "Publish", choices=pipelines.PUBLISH_CHOICES, selected="publish", width="100%"),
                      ui.input_action_button("j_auto", "Run the autopilot", class_="btn-who"),
                      ui.p("The duplicates choice above applies to the autopilot too.", class_="note"),
                      class_="stepcard", style="border:2px solid var(--who, #009ADE);")) if op else ui.div()),
