@@ -26,13 +26,11 @@ A job copies what the engine needs from the folder, runs the engine, and saves e
 
 | Tab | What it does | Who |
 |---|---|---|
-| Overview | live data file and dictionary on SharePoint, last published version, builds, backups, what is next | everybody |
-| Cycle | back up, build, check, store values, publish (data + dictionary, ending with the SharePoint clean-up), the whole cycle | operators (backup: everybody) |
-| Explore | find records in the live file, any build or any backup; download the result | everybody |
-| Quality & compare | inspect a version (quality checks, hygiene, lookup); find duplicates (which record a fix would keep or remove); compare two versions | everybody |
-| Files & feedback | download any file of a build; the feedback workbook reduced to one country | everybody |
-| Rules | what the system knows and fixes, and the standing decisions | everybody |
-| Activity | who ran what, when, with what result | everybody |
+| Home | live data file and dictionary on SharePoint, last published version, builds, backups, what is next; the Quick start guide opens at the bottom | everybody |
+| Cycle | the Autopilot (the whole cycle with no manual step), or back up, build, check, store values, publish (data + dictionary, ending with the SharePoint clean-up); below, the files of a build and the feedback workbook / fix list of one country | operators (backup, files and feedback: everybody) |
+| Submissions & lookup | Submissions: inspect the countries' files, accept or reject. Lookup & wiring: scope refresh, lookup fixes, corrections preview, pending rounds | operators decide, everybody reads |
+| Explore & quality | Find records in the live file, any build or any backup; Quality & compare: inspect a version, find duplicates, compare two versions | everybody |
+| Rules & activity | Rules: what the system knows and fixes, and the standing decisions. Activity: who ran what, when, with what result | everybody |
 
 ## Safety (inherited from the engine)
 

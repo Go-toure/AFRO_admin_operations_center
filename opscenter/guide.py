@@ -96,15 +96,11 @@ SECTIONS = [
         "must be inspected again.",
     ]),
     ("The tabs", [
-        ("Overview", "the live file, the newest build, the backups and who did what last."),
-        ("Cycle", "the steps above, or the Autopilot button that runs them all (inspect, build, check, publish, feedback) and lists what is left for a person. Operators only, except the backup."),
-        ("Submissions", "inspect the files of the countries, read the report, accept or reject each file."),
-        ("Lookup & wiring", "refresh the scope (on the PC, needs R), propose and adopt the lookup fixes, preview the corrections, close pending rounds."),
-        ("Explore", "find records in the live file, a build or a backup by country, province, district, Response, round or date."),
-        ("Quality & compare", "inspect a version, find duplicates, compare two versions column by column."),
-        ("Files & feedback", "download the files of a build and the feedback or fix list of one country."),
-        ("Rules", "every rule the build applies, with its source and its switch."),
-        ("Activity", "the log of every job: who, what, when, result."),
+        ("Home", "the live file, the newest build, the backups and who did what last; the Quick start guide opens at the bottom."),
+        ("Cycle", "the steps above, or the Autopilot button that runs them all (inspect, build, check, publish, feedback) and lists what is left for a person; below, the files of a build and the feedback or fix list of one country. Operators only, except the backup."),
+        ("Submissions & lookup", "Submissions: inspect the files of the countries, read the report, accept or reject each file. Lookup & wiring: refresh the scope (on the PC, needs R), propose and adopt the lookup fixes, preview the corrections, close pending rounds."),
+        ("Explore & quality", "Find records in the live file, a build or a backup by country, province, district, Response, round or date. Quality & compare: inspect a version, find duplicates, compare two versions column by column."),
+        ("Rules & activity", "Rules: every rule the build applies, with its source and its switch. Activity: the log of every job: who, what, when, result."),
     ]),
     ("Good to know", [
         "One job at a time. If the app says a job is running, wait for it to finish. 'Release the lock' is only for a job that crashed or "
