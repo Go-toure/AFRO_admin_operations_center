@@ -569,3 +569,13 @@ def make_autopilot(dup="none", scope_mode="due", publish=True):
                 ctx.emit("AUTOPILOT stopped at the step '%s'. Nothing was published: the live file on SharePoint is unchanged." % stage)
             raise
     return p
+
+
+@operator_only
+def p_pending_refresh(ctx):
+    """Rebuilds the pending admin data list and the feedback of the countries (one workbook per country) from the last inspection and the newest live file."""
+    ensure_inputs(ctx)
+    step_backup(ctx)
+    ctx.ws.pull_submissions()
+    admin_ok(ctx, "submissions", "pending", "--no-pull")
+    admin_ok(ctx, "submissions", "feedback", "--no-pull")          # the country workbooks read the pending list

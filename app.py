@@ -562,9 +562,101 @@ def server(input, output, session):
     def w_pskip():
         return wgrid("p_skip")
 
+    # ---------------------------------------------------------------- pending admin data
+    PEND_SHEETS = {"Pending_now": "Pending now: nothing received, ask the country", "Check_other_name": "To check: the data may be under another campaign name",
+                   "Date_differs_in_live": "In the live file, but at another date", "Received_not_in_live": "Received in a file, not in the live file yet",
+                   "Not_yet_due": "Not yet due (started less than 15 days ago)", "Resolved": "Resolved: the data arrived",
+                   "Closed": "Closed by a person", "Older_rounds_no_data": "Older rounds with no data (reference)"}
+
+    def pend_df(name):
+        d = wiring()
+        df = ((d or {}).get("pend_all") or {}).get(name)
+        if df is None:
+            return pd.DataFrame()
+        try:
+            c = input.p_country()
+        except Exception:
+            c = "All"
+        if c and c != "All":
+            if "Country" in df.columns:
+                df = df[df["Country"].astype(str) == c]
+            elif "Round" in df.columns:
+                df = df[df["Round"].astype(str).str.upper().str.startswith(c.upper() + "|")]
+        return df
+
+    @reactive.effect
+    def _pend_selects():
+        d = wiring()
+        if not d:
+            return
+        pa = d.get("pend_all") or {}
+        countries = set()
+        for df in pa.values():
+            if hasattr(df, "columns") and "Country" in df.columns:
+                countries |= set(df["Country"].dropna().astype(str))
+        countries = sorted(countries)
+        with reactive.isolate():
+            try:
+                cur = input.p_country()
+            except Exception:
+                cur = "All"
+        ui.update_select("p_country", choices=["All"] + countries, selected=cur if cur in countries else "All")
+        pend = pa.get("Pending_now")
+        choices = {}
+        if pend is not None and len(pend):
+            for _, r in pend.iterrows():
+                choices[wiring_view.round_key(r)] = "%s | %s | %s (planned %s)" % (r["Country"], r["Campaign"], r["Round"], str(r["Planned_start"])[:10])
+        ui.update_select("w_round", choices=choices)
+
+    @render.ui
+    def pend_tiles():
+        d = wiring()
+        if d is None:
+            return ui.p("Reading the pending list ... (one moment)", class_="note")
+        pa = d.get("pend_all") or {}
+        if not pa:
+            return ui.p("No pending list yet: run 'Inspect the submissions' or 'Refresh the pending list'.", class_="note")
+        n = lambda k: len(pa.get(k, []))
+        days = ""
+        pn = pa.get("Pending_now")
+        if pn is not None and len(pn) and "Days_since_start" in pn.columns:
+            days = "the oldest started %s days ago" % int(pd.to_numeric(pn["Days_since_start"], errors="coerce").max())
+        return ui.layout_columns(
+            tile("Pending now", str(n("Pending_now")), days or "nothing received: ask the country"),
+            tile("To check", str(n("Check_other_name")), "may be under another campaign name"),
+            tile("Other date in the live file", str(n("Date_differs_in_live")), "campaign and round are there"),
+            tile("Received, not in live", str(n("Received_not_in_live")), "held back or already there"),
+            tile("Not yet due", str(n("Not_yet_due")), "to watch"),
+            tile("Resolved / closed", "%d / %d" % (n("Resolved"), n("Closed")), "data arrived / a person closed it"),
+            col_widths=[4, 4, 4, 4, 4, 4])
+
     @render.data_frame
-    def w_pending():
-        return wgrid("pending")
+    def p_table():
+        try:
+            sheet = input.p_sheet()
+        except Exception:
+            sheet = "Pending_now"
+        df = pend_df(sheet)
+        if len(df) == 0:
+            return render.DataGrid(pd.DataFrame({"": ["nothing"]}), width="100%")
+        return render.DataGrid(df.head(500).astype(str), height="auto", width="100%")
+
+    @render.data_frame
+    def p_bycountry():
+        d = wiring()
+        df = ((d or {}).get("pend_all") or {}).get("By_country")
+        if df is None or len(df) == 0:
+            return render.DataGrid(pd.DataFrame({"": ["nothing"]}), width="100%")
+        return render.DataGrid(df.astype(str), height="auto", width="100%")
+
+    @render.download(filename="Pending_admin_data.xlsx")
+    def p_dl():
+        yield (get_ws().workspace / "submissions" / "Pending_admin_data.xlsx").read_bytes()
+
+    @reactive.effect
+    @reactive.event(input.p_refresh)
+    def _p_refresh():
+        start("Refresh the pending list", pipelines.p_pending_refresh)
 
     @render.download(filename="lookup_fix_proposals.xlsx")
     def w_dl_prop():
@@ -607,21 +699,6 @@ def server(input, output, session):
             ui.p(ui.strong("Decided now: "),
                  "%s correction line(s), %s lookup change(s)." % ("?" if cl is None else cl, "?" if ov_ is None else ov_)),
             prop_btns, class_="stepcard", style="margin-top:14px;")
-        pend = d["pending"]
-        choices = {}
-        if len(pend):
-            for _, r in pend.iterrows():
-                choices[wiring_view.round_key(r)] = "%s | %s | %s (planned %s)" % (r["Country"], r["Campaign"], r["Round"], str(r["Planned_start"])[:10])
-        close_card = ui.div(
-            ui.h5("4  Pending rounds"),
-            ui.p("Rounds of the lookup with nothing received 15 days after their start. Close a round that did not take place or whose data are not expected; "
-                 "it leaves the pending list and the country feedback. The decision is kept in the SharePoint folder.", class_="note"),
-            ui.output_data_frame("w_pending"),
-            ((ui.div(ui.input_select("w_round", "Round to close", choices=choices, width="100%"),
-                     ui.input_text("w_note", "Why (kept with the decision)", width="100%"),
-                     ui.input_action_button("w_close", "Close this round", class_="btn-outline-danger"), style="margin-top:10px;"))
-             if (op and choices) else ui.span()),
-            class_="stepcard", style="margin-top:14px;")
         return ui.div(
             scope_card, wire_card,
             ui.h5("3  What the last inspection and proposal found", style="margin-top:14px;"),
@@ -631,7 +708,7 @@ def server(input, output, session):
             ui.h6("Proposed: live campaign renamed to the lookup name", style="margin-top:12px;"), ui.output_data_frame("w_pcorr"),
             ui.h6("Proposed: changes to the lookup", style="margin-top:12px;"), ui.output_data_frame("w_pchg"),
             ui.h6("Not proposed (needs a person)", style="margin-top:12px;"), ui.output_data_frame("w_pskip"),
-            close_card)
+            ui.p("The rounds with no admin data received are in the tab Pending admin data.", class_="note", style="margin-top:12px;"))
 
     # ---------------------------------------------------------------- explore
     @reactive.extended_task
@@ -1058,6 +1135,27 @@ def server(input, output, session):
                 ui.nav_panel("Cycle", ui.navset_pill(
                     ui.nav_panel("Run", ui.output_ui("cycle_ui")),
                     ui.nav_panel("Submissions", ui.output_ui("subs_ui")),
+                    ui.nav_panel("Pending admin data",
+                                 ui.p("The rounds of the lookup (GPEI) whose admin data are not in the live file 15 days after their planned start date. "
+                                      "Read from the last inspection; 'Refresh the pending list' rebuilds it from the newest live file. Nothing is sent to the countries.",
+                                      class_="note"),
+                                 ui.output_ui("pend_tiles"),
+                                 ui.layout_columns(
+                                     ui.input_select("p_sheet", "Show", choices=PEND_SHEETS, selected="Pending_now", width="100%"),
+                                     ui.input_select("p_country", "Country", choices=["All"], width="100%"),
+                                     ui.div(ui.input_action_button("p_refresh", "Refresh the pending list", class_="btn-who"),
+                                            ui.download_button("p_dl", "Pending admin data (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
+                                            style="margin-top:32px;"),
+                                     col_widths=[5, 3, 4]),
+                                 ui.output_data_frame("p_table"),
+                                 ui.h5("By country", style="margin-top:14px;"), ui.output_data_frame("p_bycountry"),
+                                 ui.div(ui.h5("Close a round"),
+                                        ui.p("A round that did not take place, or whose data are not expected, can be closed: it leaves this list and the country "
+                                             "feedback. The decision is kept in the SharePoint folder. Operators only.", class_="note"),
+                                        ui.input_select("w_round", "Round (from 'Pending now')", choices={}, width="100%"),
+                                        ui.input_text("w_note", "Why (kept with the decision)", width="100%"),
+                                        ui.input_action_button("w_close", "Close this round", class_="btn-outline-danger"),
+                                        class_="stepcard", style="margin-top:14px;")),
                     ui.nav_panel("Lookup & wiring", ui.output_ui("wiring_ui")),
                     ui.nav_panel("Files & feedback",
                              ui.layout_columns(

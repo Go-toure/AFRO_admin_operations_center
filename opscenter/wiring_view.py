@@ -45,7 +45,7 @@ def load(store, ws):
         "issues": pend.get("Lookup_issues", empty), "accepted": pend.get("Lookup_accepted", empty),
         "pending": pend.get("Pending_now", empty), "check_other": pend.get("Check_other_name", empty),
         "p_corr": prop.get("Corrections", empty), "p_chg": prop.get("Lookup_changes", empty), "p_skip": prop.get("Not_proposed", empty),
-        "has_proposals": bool(prop), "has_pending": bool(pend),
+        "has_proposals": bool(prop), "has_pending": bool(pend), "pend_all": pend,
         "scope_status": scope_refresh.status(),
     }
 
