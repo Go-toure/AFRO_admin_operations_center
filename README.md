@@ -58,6 +58,26 @@ or two servers). Operators can build and publish; viewers can only look and down
   engine where it is (`AFRO_GEO_REFERENCE_DIR`), so a build adds the `geo_code` / `geo_match` of every record, the new ones included (1.7.0).
 * **The ledger of the submissions** is read by the app itself before each job, and every job tells the engine so (`OPS_LEDGER_FROM_APP`). The build and the check
   therefore no longer warn that "the decisions on the submissions were not read"; that warning stays for a build run on a PC without the app (1.7.1).
+* **One decision per distinct file (1.7.2).** The copies and versions of a file (same name pattern, same country) are grouped: the Decide list offers "ALL VERSIONS" and
+  one decision covers them all; the Files table shows how many versions each file has.
+* **Held-back records are sorted, and a person can close a group (1.7.2).** The Held back sub-tab sorts the records that look like a live record into "same record
+  (figures agree)", "same place and campaign, figures far apart" and "look at it". A person closes a group as "duplicate, not added": the decision is kept in
+  `submissions/held_closed.json` (SharePoint folder), the records leave the held list and the country feedback at the next inspection, and nothing is dropped
+  silently (a closed group can be reopened). The app never closes anything by itself: the figures of the possible duplicates never agree exactly with the live record.
+* **Home card "What to do next" and `status.json` (1.7.2).** `opscenter/status.py` reads the small files the app keeps and says what is live, what waits and the next
+  things to do. The same content is written to `status.json` in the SharePoint folder after every job, for a person, a dashboard or an AI agent.
+* **Feedback tracker per country (1.7.2).** Submissions > Feedback shows, per country, what is open and whether the feedback was sent, answered or needs a reminder
+  (`submissions/feedback_log.json`). The app sends nothing: a person sends the workbook and records it.
+* **Incremental inspection (1.7.2).** The engine keeps the result of every file it read (`submissions/_inspect_cache/`, never sent to SharePoint). The next inspection reads
+  again only the files that are new or changed; everything is read again when the live file (a publish), the lookup, the geo reference, the learned headers, the
+  campaign hints, the closed held records, the call-in / eTally files, the engine code or the day changes. `OPS_NO_INSPECT_CACHE=1` switches it off. The log says
+  "Incremental inspection: N of M file(s) ... reused".
+* **Where records came from (1.7.2).** Each build that adds records from submissions writes `runs/vNN/records_added_from_submissions_vNN.csv` (file, country, province,
+  district, response, date, round, vaccine). Live data > Where records came from shows, per build and source file, how many records entered and when it was published.
+* **The automatic rule 4 bug fix (1.7.2).** The clean-up of `prepared/` removed the `_clean` / `_held` files that rule 4 needs, so the clean records of files with
+  findings were never taken. They are kept now: the next Autopilot adds them.
+* **Tests and an automatic check (1.7.2).** `python -m unittest discover -s tests -v` (invented data, no SharePoint). `.github/workflows/checks.yml` runs the tests, imports the
+  app and runs `python tools/sync_engine.py --check-public` at every push.
 * **The country workbooks of earlier days are removed** from `submissions/feedback_by_country` at the end of a job (the PC keeps them in `_previous`).
 * **A file a job has written but not yet sent is never overwritten** by reading the folder again: the publish writes the published flag
   (`state.json`, the run's `manifest.json`) and the job sends it when it ends (the autopilot sends it right after the publish).

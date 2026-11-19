@@ -78,7 +78,9 @@ SECTIONS = [
                        "duplicates are removed, new records get the lookup's campaign name, round and planned date, and a record that is the same "
                        "as a live one under another campaign name is matched, not added. Files that are clearly not admin data (IM, LQAS, AEFI, "
                        "supplies, summaries) are labelled NOT ADMIN DATA; admin data in another template is never ignored. Records that fail a "
-                       "check are held back with their reason, never lost."),
+                       "check are held back with their reason, never lost. The Held back sub-tab sorts them (same record, figures far apart, look at it) "
+                       "and a person can close a group as a duplicate that is not added; the decision is kept. An inspection reads again only the "
+                       "files that are new or changed since the last one."),
         ("Automatic rules", "four rules take what is safe without a decision: harmless findings only; findings the lookup confirms; the same "
                             "findings as a file a person accepted before; and the clean records of any file that is not in the wrong folder or "
                             "against the lookup's vaccine. A person's decision always wins."),

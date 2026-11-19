@@ -374,6 +374,52 @@ def make_sub_decide(action, target, note):
     return p
 
 
+def make_sub_decide_many(action, targets, note):
+    """The same decision for every version of a file (the same file sent more than once)."""
+    @operator_only
+    def p(ctx):
+        ctx.ws.pull_submissions()
+        for t in targets:
+            args = ["submissions", action, t, "--by", ctx.user["name"]]
+            if note:
+                args += ["--note", note]
+            admin_ok(ctx, *args)
+    return p
+
+
+def make_followup(country, kind, note):
+    """Record in the log that the feedback of a country was sent / answered (or a note). The app sends nothing to any country."""
+    @operator_only
+    def p(ctx):
+        from . import followup
+        ctx.ws.pull_submissions()
+        e = followup.add_entry(ctx.ws, country, kind, ctx.user["name"], note)
+        ctx.emit("Recorded for %s: %s (%s)." % (e["country"], followup.KINDS[kind].lower(), e["at"]))
+    return p
+
+
+def make_held_close(file, triage, note):
+    """Close a group of held records as 'duplicate, not added' (nothing changes in the live file; the next inspection no longer holds them)."""
+    @operator_only
+    def p(ctx):
+        from . import heldclose
+        ctx.ws.pull_submissions()
+        e = heldclose.close_group(ctx.ws, file, triage, ctx.user["name"], note)
+        ctx.emit("Closed %d held record(s) of %s (%s) as duplicate, not added. They stay out of the live file and the next inspection will not hold them." %
+                 (e["n"], e["file"], e["triage"].lower()))
+    return p
+
+
+def make_held_reopen(gid):
+    @operator_only
+    def p(ctx):
+        from . import heldclose
+        ctx.ws.pull_submissions()
+        heldclose.reopen(ctx.ws, gid)
+        ctx.emit("Reopened: those records are held again at the next inspection.")
+    return p
+
+
 def make_compare(a, b):
     def p(ctx):
         ensure_inputs(ctx)

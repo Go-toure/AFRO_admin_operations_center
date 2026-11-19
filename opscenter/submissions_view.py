@@ -1,10 +1,11 @@
 """What the Submissions tab shows: the files of the countries, what the last inspection found, and the operator's decisions."""
+import hashlib
 import re
 
 import pandas as pd
 
-from . import config
-from .pipelines import sub_ledger
+from . import config, heldclose
+from .pipelines import local_runs, sub_ledger
 from .store import Store
 
 
@@ -65,33 +66,19 @@ HOLD_KINDS = (
     ("possible duplicate", "Looks like a record already in the live file (same place and date, other campaign name or round)"),
     ("same names as several live records", "Matches several live records, none of them identical"),
 )
-_HELD = {}
-
-
 def held_reasons(ws):
-    """[{'Reason', 'Records', 'Countries'}] for the records the last inspection held back, from the report workbook (read once per version)."""
-    p = ws.workspace / "submissions" / "Submissions_report.xlsx"
-    try:
-        key = (str(p), p.stat().st_mtime_ns)
-    except OSError:
+    """[{'Reason', 'Records', 'Countries'}] for the records the last inspection held back and nobody closed (read once per version of the report)."""
+    h = heldclose.open_table(ws)
+    if not len(h):
         return []
-    if key not in _HELD:
-        try:
-            h = pd.read_excel(p, sheet_name="Held_back_records", usecols=["Country", "Hold_reason"], dtype=str)
-        except Exception:
-            h = None
-        out = []
-        if h is not None and len(h):
-            def label(r):
-                r = str(r)
-                return next((lab for k, lab in HOLD_KINDS if k in r), "Other reason (see the report)")
-            h["Reason"] = h["Hold_reason"].map(label)
-            for reason, g in h.groupby("Reason"):
-                out.append({"Reason": reason, "Records": len(g), "Countries": ", ".join(sorted(set(g["Country"].dropna())))})
-            out.sort(key=lambda x: -x["Records"])
-        _HELD.clear()
-        _HELD[key] = out
-    return _HELD[key]
+
+    def label(r):
+        r = str(r)
+        return next((lab for k, lab in HOLD_KINDS if k in r), "Other reason (see the report)")
+    h = h.assign(Reason=h["Hold_reason"].map(label))
+    out = [{"Reason": reason, "Records": len(g), "Countries": ", ".join(sorted(set(g["Country"].dropna())))} for reason, g in h.groupby("Reason")]
+    out.sort(key=lambda x: -x["Records"])
+    return out
 
 
 def _country_of(e, path):
@@ -125,8 +112,31 @@ def load(store, ws):
         return {"configured": False}
     ws.prepare()
     ws.pull_submissions()
+    return build(ws, list_folder(Store(store.g, config.SUBMISSIONS_URL)))
+
+
+def list_local(ws):
+    """The same listing as list_folder, from the copy of the folder on this machine (what the last job read): no network."""
+    out = {}
+    base = ws.workspace / "submissions_in"
+    if base.is_dir():
+        import datetime as dt
+        for p in base.rglob("*"):
+            if p.is_file() and p.suffix.lower() in DATA_EXT + (".zip",) and not p.name.startswith(("~$", ".")):
+                st = p.stat()
+                out[p.relative_to(base).as_posix()] = {"size": st.st_size, "modified": dt.datetime.utcfromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")}
+    return out
+
+
+def load_local(ws):
+    """What load() returns, from the files on this machine only (used at the end of a job, for the status file)."""
+    if not config.SUBMISSIONS_URL:
+        return {"configured": False}
+    return build(ws, list_local(ws))
+
+
+def build(ws, folder):
     led = sub_ledger(ws)
-    folder = list_folder(Store(store.g, config.SUBMISSIONS_URL))
     auto = _auto_names(ws)
     rows, inspected, changed_files = [], set(), []
     for h, e in led.get("files", {}).items():
@@ -150,11 +160,44 @@ def load(store, ws):
                      "Clean new": e.get("clean_new", ""), "Held back": e.get("held_new", ""),
                      "Errors": e.get("qc_errors", ""), "Warnings": e.get("qc_warnings", ""), "Left out": e.get("excluded", ""),
                      "Inspected": e.get("last_inspected", ""), "Why": e.get("why", ""), "Note": e.get("note", ""),
+                     "_name": e.get("name", ""), "Added in": "",
                      "First seen": e.get("first_seen", ""), "Country": _country_of(e, path), "Not admin data": _kind(e.get("why", "")),
+                     "_gkey": (e.get("country_folder", ""), e.get("stem", "")),
                      "In folder (modified)": (folder.get(_container(path)) or {}).get("modified", ""),
                      "Version": "changed version" if any(x is not e and (x.get("path") or x.get("name")) == path and x.get("first_seen", "") < e.get("first_seen", "")
                                                           for x in led.get("files", {}).values()) else ""})
-    in_ledger = {r["File"] for r in rows}
+    # files whose records a published build has already added (a build published after the file was inspected): they are in the live file now,
+    # so they are not "waiting for the next build" any more (until the next inspection says so itself)
+    added_by = {}
+    for n, m in local_runs(ws):
+        pub = m.get("published") or {}
+        if pub.get("at"):
+            for nm in (m.get("build", {}).get("submissions") or []):
+                added_by.setdefault(nm, []).append((str(pub["at"])[:16], n))
+    for r in rows:
+        for at, n in sorted(added_by.get(r["_name"], [])):
+            if str(r["Inspected"])[:16] <= at:
+                r["Added in"] = "v%d" % n
+        if r["Added in"]:
+            r["Decision"] = "added to the live file (%s)" % r["Added in"]
+            r["Clean new"] = 0
+    # the same file sent more than once (other folder, a zip, a later version): same country folder and same name once the date and the copy marks
+    # are removed (the engine's 'stem'). One decision can be taken for the whole group.
+    gmembers = {}
+    for r in rows:
+        if r["Status"] != "blocked" and r["_gkey"][1]:
+            gmembers.setdefault(r["_gkey"], []).append(r)
+    groups = {}
+    for key, mem in gmembers.items():
+        gid = hashlib.sha1("|".join(key).encode("utf-8")).hexdigest()[:8]
+        for r in mem:
+            r["Group"], r["Versions"] = gid, len(mem)
+        if len(mem) > 1:
+            groups[gid] = {"ids": [r["id"] for r in mem], "label": "%s: %s (%d versions)" % (mem[0]["Country"], mem[0]["File"].rsplit("/", 1)[-1], len(mem)),
+                           "files": [r["File"] for r in mem]}
+    for r in rows:
+        r.setdefault("Group", ""), r.setdefault("Versions", 1)
+        in_ledger = {r["File"] for r in rows}
     containers = {_container(p) for p in in_ledger if ".zip/" in p.lower()}
     known_names = {p.rsplit("/", 1)[-1] for p in in_ledger}
     new_files = [{"Country": _country_of({}, p), "File": p, "Modified": f["modified"], "Size KB": round(f["size"] / 1024)}
@@ -176,8 +219,11 @@ def load(store, ws):
             "blocked_admin": sum(1 for r in rows if r["Status"] == "blocked" and not r["Not admin data"]), "changed": changed, "in_folder": len(folder),
             "accepted": sum(1 for r in rows if r["Decision"] == "accepted"),
             "by_rules": sum(1 for r in rows if r["Decision"] == "taken by rules"),
+            "added": sum(1 for r in rows if r["Added in"]),
+            "added_records": sum(int(r["New"] or 0) for r in rows if r["Added in"]),
             "clean_new": sum(int(r["Clean new"] or 0) for r in rows if r["Status"] != "blocked"),
-            "held_back": sum(int(r["Held back"] or 0) for r in rows),
+            "held_back": sum(int(r["Held back"] or 0) for r in rows) - heldclose.closed_in_report(ws),
+            "held_closed": sum(int(g["Records"]) for g in heldclose.closed_groups(ws)),
             "pending": _pending_count(ws),
             "summary": (ws.workspace / "submissions" / "Submissions_summary.xlsx").is_file(),
             "pending_file": (ws.workspace / "submissions" / "Pending_admin_data.xlsx").is_file(),
@@ -185,4 +231,6 @@ def load(store, ws):
             "feedback": sorted(q.name for q in (ws.workspace / "submissions" / "feedback_by_country").glob("Feedback_*.xlsx"))
             if (ws.workspace / "submissions" / "feedback_by_country").is_dir() else [],
             "waiting": sum(1 for r in rows if r["Decision"] in ("waiting", "changed since inspected") and r["Status"] not in ("blocked", "nothing new")),
+            "waiting_distinct": len({(r["Group"] or r["id"]) for r in rows if r["Decision"] in ("waiting", "changed since inspected") and r["Status"] not in ("blocked", "nothing new")}),
+            "groups": groups,
             "report": (ws.workspace / "submissions" / "Submissions_report.xlsx").is_file()}

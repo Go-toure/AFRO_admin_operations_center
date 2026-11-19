@@ -72,7 +72,7 @@ class Workspace:
                      ("inspect", self.workspace / "inspect"), ("compare", self.workspace / "compare"),
                      ("submissions", self.workspace / "submissions"), ("inputs", self.inputs),
                      ("scope", self.scope_home / "data"), ("geo_reference", self.geo)]
-        self.single = {"state.json": self.workspace / "state.json"}
+        self.single = {"state.json": self.workspace / "state.json", "status.json": self.workspace / "status.json"}
         self.available = {}        # run number -> file names in the SharePoint folder (filled by pull_light)
 
     # ------------------------------------------------------------------ engine set-up
@@ -220,7 +220,8 @@ class Workspace:
             if re.match(r"^v\d+$", c["name"]):
                 self.available[int(c["name"][1:])] = {f["name"] for f in listing}
             for f in listing:
-                if f["name"] in ("manifest.json", "check_report.md", "publish.log", "dictionary.log", "build.log") and not f["is_dir"]:
+                if (f["name"] in ("manifest.json", "check_report.md", "publish.log", "dictionary.log", "build.log")
+                        or f["name"].startswith("records_added_from_submissions_v")) and not f["is_dir"]:
                     rel = "runs/%s/%s" % (c["name"], f["name"])
                     d = self.local_of(rel)
                     # a log or report of the same size that is already here and was read from the folder is not downloaded again;
@@ -337,8 +338,13 @@ class Workspace:
             led = json.loads((out / "ledger.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return 0
-        keep = {Path(e["prepared"]).name for e in led.get("files", {}).values()
-                if e.get("prepared") and e.get("present", True) and not e.get("superseded")}
+        keep = set()
+        for e in led.get("files", {}).values():
+            if e.get("prepared") and e.get("present", True) and not e.get("superseded"):
+                keep.add(Path(e["prepared"]).name)
+                keep.add(Path(e["prepared"]).name.replace(".xlsx", "_held.xlsx"))     # the records held back
+                if e.get("prepared_clean"):
+                    keep.add(Path(e["prepared_clean"]).name)                           # the clean records of a file with findings (automatic rule 4)
         n = 0
         pdir = out / "prepared"
         if pdir.is_dir():

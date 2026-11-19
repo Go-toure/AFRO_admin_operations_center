@@ -101,6 +101,9 @@ class JobManager:
         finally:
             try:
                 if ws is not None and token is not None:      # only a job that holds the lock writes to the folder
+                    from . import status as _status
+                    _status.write(ws, last_job={"title": job.title, "status": status, "message": message,
+                                                "at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
                     sent = ws.push_changes(job.emit)
                     if sent:
                         job.emit("%d file(s) saved to the SharePoint folder." % len(sent))

@@ -1,0 +1,24 @@
+name: checks
+
+# Runs on every push and pull request: the tests of the intake views, the import of the app, and the check that nothing private is in the public repository.
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install the requirements
+        run: pip install -r requirements.txt
+      - name: Tests
+        run: python -m unittest discover -s tests -v
+      - name: The app imports
+        run: python -c "import app"
+      - name: Nothing private in the public repository
+        run: python tools/sync_engine.py --check-public

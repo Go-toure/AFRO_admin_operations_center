@@ -10,7 +10,7 @@ from pathlib import Path
 import pandas as pd
 from shiny import App, reactive, render, ui
 
-from opscenter import __version__, auth, config, explore, guide, livedata, overview, pipelines, scope_refresh, submissions_view, wiring_view
+from opscenter import __version__, auth, config, explore, followup, guide, heldclose, livedata, overview, pipelines, provenance, scope_refresh, status, submissions_view, wiring_view
 from opscenter.jobs import JobManager
 from opscenter.store import Store, StoreError
 from opscenter.workspace import Workspace
@@ -422,6 +422,14 @@ def server(input, output, session):
         fid = input.s_file()
         if not d or not fid:
             ui.notification_show("Choose a file first (inspect the submissions if the list is empty).", type="warning")
+            return
+        if fid.startswith("grp:"):
+            g = d.get("groups", {}).get(fid[4:])
+            if not g:
+                return
+            ids = [r["id"] for r in d["rows"] if r["id"] in g["ids"] and not (action == "accept" and r["Status"] == "blocked")]
+            start("%s all %d versions of %s" % ("Accept" if action == "accept" else "Reject", len(ids), g["label"].split(": ", 1)[-1]),
+                  pipelines.make_sub_decide_many(action, ids, (input.s_note() or "").strip()))
             return
         row = next((r for r in d["rows"] if r["id"] == fid), None)
         if row is None:
@@ -1244,7 +1252,8 @@ def server(input, output, session):
                         if is_operator() and not JM.busy() else None) if lock else ui.div()
         return ui.div(
             ui.layout_columns(*tiles, col_widths=[3, 3, 3, 3]),
-            ui.div(ui.p(ui.strong("Next: "), d["next"]), banner, style="margin:14px 0 6px;"),
+            next_card(d),
+            ui.div(banner, style="margin:6px 0;"),
             ui.p(ui.strong("SharePoint folder: "), "%s in total (%s). Older backups, builds, results and file versions are cleaned up automatically%s." %
                  (d["storage"]["total"], d["storage"]["parts"],
                   (" (last full clean-up %s: %s version(s), %s MB freed)" % (d["storage"]["cleaned"].get("at", "")[:16].replace("T", " "),
@@ -1256,6 +1265,22 @@ def server(input, output, session):
             ui.h5("Backups of the live file", style="margin-top:18px;"),
             ui.output_data_frame("backups_table"),
         )
+
+    def next_card(d):
+        """What to do next, in plain words, from the live file, the backups, the builds and the submissions."""
+        try:
+            snap = status.snapshot(get_ws(), subs=subs(), live=d.get("live"), lock=d.get("lock"),
+                                   last_job={"title": JM.last.title, "status": JM.last.status, "message": JM.last.message} if JM.last else None)
+        except Exception as e:
+            return ui.div(ui.p("The next steps could not be worked out (%s)." % e, class_="note"))
+        mark = {"wait": "WAIT", "do": "DO", "look": "LOOK", "ok": "OK"}
+        colour = {"wait": "#8a6d00", "do": "#0b6b3a", "look": "#0a58a6", "ok": "#555"}
+        rows = [ui.div(ui.span(mark[a["level"]], style="display:inline-block;min-width:52px;font-weight:600;color:%s;" % colour[a["level"]]),
+                       a["text"], ui.span("  (%s)" % a["go"], class_="note"), style="padding:4px 0;") for a in snap["next_actions"]]
+        return ui.div(ui.h5("What to do next"),
+                      ui.p("Worked out from the live file, the backups, the builds and the submissions. DO = a step that is safe and ready; LOOK = a person has to "
+                           "decide or follow up. The same list is written to status.json after every job.", class_="note"),
+                      *rows, class_="stepcard", style="margin:14px 0 6px;")
 
     @render.data_frame
     def runs_table():
@@ -1351,9 +1376,14 @@ def server(input, output, session):
                  tile("Admin data that cannot be read", str(d["blocked_admin"]),
                       "Coverage files that cannot be used (a key column is missing, for instance). The reason is in the Files table." if d["blocked_admin"] else "Coverage files that cannot be used (a key column missing, for instance): none."),
                  tile("Already in the live file", str(d["nothing_new"]), "Files whose records are all in the live file already, or tally sheets used only as a check. Nothing to add."),
-                 tile("Waiting for a person", str(d["waiting"]), "Files with something to add that no automatic rule can take yet. Someone has to accept or reject them."),
+                 tile("Waiting for a person", str(d["waiting"]),
+                      "Files with something to add that no automatic rule can take yet. Someone has to accept or reject them. %s" %
+                      (("Many are the same file sent more than once: %d distinct files, and one decision covers all the versions of a file (Decide)." % d["waiting_distinct"])
+                       if d["waiting_distinct"] < d["waiting"] else "")),
                  tile("Taken by rules or accepted", str(d["by_rules"] + d["accepted"]),
-                      "%d file(s) taken by the automatic rules, %d accepted by a person. Their %d clean new records enter the live file at the next build." % (d["by_rules"], d["accepted"], d["clean_new"])),
+                      ("%d file(s) taken by the automatic rules, %d accepted by a person. Their %d clean new records enter the live file at the next build." %
+                       (d["by_rules"], d["accepted"], d["clean_new"])) +
+                      ((" Already in the live file from a published build: %d file(s), %d records." % (d["added"], d["added_records"])) if d["added"] else "")),
                  tile("Records held back", str(d["held_back"]), held_txt),
                  tile("Pending admin data", str(d["pending"][0]) if d.get("pending") else "-",
                       ("Campaign rounds that started more than 15 days ago with no record in the live file; %d more may have been sent under another name." % d["pending"][1]) if d.get("pending") else "Run the inspection to compute."),
@@ -1366,7 +1396,9 @@ def server(input, output, session):
                  "against the lookup's vaccine. Records that fail a check are held back with their reason. What is left is for you: open the report, "
                  "then accept or reject. A person's decision always wins over the rules. An accepted file goes into the next Build as new "
                  "records only; nothing that is already in the live file is changed. A blocked file cannot be accepted.", class_="note"),
-            ui.input_select("s_file", "File", choices={r["id"]: "%s  (%s, %s)" % (r["File"], r["Status"], r["Decision"]) for r in d["rows"]}, width="100%"),
+            ui.input_select("s_file", "File or all the versions of a file",
+                            choices={**{"grp:" + g: "ALL VERSIONS - " + v["label"] for g, v in d.get("groups", {}).items()},
+                                     **{r["id"]: "%s  (%s, %s)" % (r["File"], r["Status"], r["Decision"]) for r in d["rows"]}}, width="100%"),
             ui.output_ui("s_why"),
             ui.input_text("s_note", "Note (optional, kept in the ledger)", width="100%"),
             ui.input_action_button("s_accept", "Accept", class_="btn-who"),
@@ -1392,30 +1424,78 @@ def server(input, output, session):
             ui.navset_pill(
                 ui.nav_panel("What is new", news_card(d),
                              (ui.div(ui.h6("In the folder, not read yet", style="margin-top:14px;"), ui.output_data_frame("subs_new")) if d["not_inspected"] else ui.div())),
-                ui.nav_panel("Held back", held_card(d) if d.get("held_reasons") else ui.p("No record is held back.", class_="note")),
+                ui.nav_panel("Held back", held_card(d) if (d.get("held_reasons") or d.get("held_closed")) else ui.p("No record is held back.", class_="note")),
                 ui.nav_panel("Files", ui.p("Every file of the folder with what the inspection found. Use the boxes under the column names to filter "
                                            "(for example Not admin data = LQAS, or Status = blocked).", class_="note"),
                              ui.output_data_frame("subs_table")),
                 ui.nav_panel("Decide", decide_card,
                              ui.p("The records of the accepted files are added by the next Build (or the whole cycle); the Check step shows how many. "
                                   "Files stay where they are and a ledger in the SharePoint folder of the app keeps every decision.", class_="note")),
-                ui.nav_panel("Feedback", fb if fb else ui.p("Nothing written yet: run the inspection.", class_="note")),
+                ui.nav_panel("Feedback", followup_card(d, op), fb if fb else ui.p("Nothing written yet: run the inspection.", class_="note")),
                 id="subs_sub", selected=sel if sel in panes else None),
         )
 
     def held_card(d):
-        """Why records are held back, in plain words, from the last inspection (a plain table: it is small and needs no separate output)."""
+        """Why records are held back, in plain words, and the triage of the ones that look like live records (a person can close a group)."""
         h = d.get("held_reasons") or []
-        if not h:
+        closed = heldclose.closed_groups(get_ws())
+        if not h and not closed:
             return ui.div()
         table = ui.tags.table(
             ui.tags.thead(ui.tags.tr(*[ui.tags.th(c) for c in ("Reason", "Records", "Countries")])),
             ui.tags.tbody(*[ui.tags.tr(ui.tags.td(r["Reason"]), ui.tags.td(str(r["Records"])), ui.tags.td(r["Countries"])) for r in h]),
-            class_="table table-sm", style="width:100%;")
-        return ui.div(ui.h5("Records held back: why"),
-                      ui.p("A record is held back when it looks new but should not go into the live file as it is. Nothing is lost: each one is listed with its "
-                           "reason in the report and in the feedback to the country, so it can be corrected or confirmed and sent again.", class_="note"),
-                      table, class_="stepcard", style="margin-top:14px;")
+            class_="table table-sm", style="width:100%;") if h else ui.p("No record is held back.", class_="note")
+        why = ui.div(ui.h5("Records held back: why"),
+                     ui.p("A record is held back when it looks new but should not go into the live file as it is. Nothing is lost: each one is listed with its "
+                          "reason in the report and in the feedback to the country, so it can be corrected or confirmed and sent again.", class_="note"),
+                     table, class_="stepcard", style="margin-top:14px;")
+        return ui.div(why, triage_card(d, closed))
+
+    def triage_card(d, closed):
+        """The held records sorted by file and by how close they are to a live record; one click closes a group as 'duplicate, not added'."""
+        gr = heldclose.groups(get_ws())
+        if not gr and not closed:
+            return ui.div()
+        op = is_operator()
+        ch = {"%s||%s" % (g["File"], g["Triage"]): "%s - %s (%d)" % (g["File"], g["Triage"], g["Records"]) for g in gr if not g["Triage"].startswith("Not sorted")}
+        form = ui.div(
+            ui.input_select("hc_group", "Group to close", choices=ch, width="100%"),
+            ui.input_text("hc_note", "Note (optional: why these are duplicates)", width="100%"),
+            ui.input_action_button("hc_close", "Close as duplicate, not added", class_="btn-who"),
+            (ui.span("  Closing changes nothing in the live file. The next inspection no longer holds these records.", class_="note"))) if op and ch else ui.div()
+        reopen = ui.div(
+            ui.h6("Closed by a person", style="margin-top:14px;"),
+            ui.tags.ul(*[ui.tags.li("%s - %s: %d record(s), by %s on %s%s" % (g["File"], g["Triage"].lower(), g["Records"], g["Closed by"], g["On"],
+                                                                              (" (" + g["Note"] + ")") if g["Note"] else "")) for g in closed]),
+            ui.input_select("hc_closed", "Reopen a closed group", choices={g["id"]: "%s - %s" % (g["File"], g["Triage"]) for g in closed}, width="100%") if op else ui.div(),
+            ui.input_action_button("hc_reopen", "Reopen", class_="btn-outline-secondary") if op else ui.div()) if closed else ui.div()
+        return ui.div(ui.h5("Held records that look like live records: triage"),
+                      ui.p("They are sorted by how close their figures are to the live record: 'Probably the same campaign re-sent' = target within 1% and children "
+                           "vaccinated within 5%; 'Figures differ a lot' = target more than 25% or vaccinated more than 50% away (another campaign, or a correction); "
+                           "'Needs a look' = everything else. The sorting only helps: nothing is closed unless a person closes it.", class_="note"),
+                      ui.output_data_frame("subs_triage"), ui.div(style="height:8px;"), form, reopen, class_="stepcard", style="margin-top:14px;")
+
+    @render.data_frame
+    def subs_triage():
+        subs()
+        return render.DataGrid(pd.DataFrame(heldclose.groups(get_ws()), columns=["File", "Triage", "Records", "Countries"]), height="300px", width="100%", filters=True)
+
+    @reactive.effect
+    @reactive.event(input.hc_close)
+    def _hc_close():
+        v = input.hc_group()
+        if not v or "||" not in v:
+            ui.notification_show("Choose a group first.", type="warning")
+            return
+        f, t = v.split("||", 1)
+        start("Close held records: %s (%s)" % (f, t), pipelines.make_held_close(f, t, (input.hc_note() or "").strip()))
+
+    @reactive.effect
+    @reactive.event(input.hc_reopen)
+    def _hc_reopen():
+        g = input.hc_closed()
+        if g:
+            start("Reopen a closed group of held records", pipelines.make_held_reopen(g))
 
     def news_card(d):
         """What is new in the folder: the files that arrived since a chosen inspection, by country, with their records."""
@@ -1471,6 +1551,41 @@ def server(input, output, session):
         rows = _since_rows()
         return render.DataGrid(pd.DataFrame([{c: r[c] for c in cols} for r in rows], columns=cols), height="360px", width="100%")
 
+    def followup_card(d, op):
+        """Follow-up with the countries: what is open, what was sent and when, who answered. The app sends nothing."""
+        countries = [r["Country"] for r in followup.table(get_ws())] if d.get("feedback") or d.get("pending_file") else []
+        form = ui.div(
+            ui.layout_columns(ui.input_select("fu_country", "Country", choices=countries),
+                              ui.input_radio_buttons("fu_kind", "Record", choices={"sent": "Feedback sent", "answered": "Country answered", "note": "Note only"}, inline=True),
+                              col_widths=[5, 7]),
+            ui.input_text("fu_note", "Note (optional: who it was sent to, what was answered)", width="100%"),
+            ui.input_action_button("fu_go", "Record", class_="btn-who")) if op and countries else ui.div()
+        return ui.div(ui.h5("Follow-up with the countries"),
+                      ui.p("One line per country: what is open (to correct or confirm, rounds not received), when the feedback was sent, and whether the country answered. "
+                           "The app sends nothing: send the workbook yourself, then record it here so the whole team sees it. 'To send' comes first.", class_="note"),
+                      ui.output_data_frame("subs_followup"), ui.div(style="height:8px;"), form, class_="stepcard", style="margin-bottom:14px;")
+
+    @render.data_frame
+    def lv_prov():
+        subs()
+        rows = provenance.table(get_ws())
+        return render.DataGrid(pd.DataFrame(rows, columns=provenance.COLS), height="420px", width="100%", filters=True)
+
+    @render.data_frame
+    def subs_followup():
+        subs()          # redraw when the submissions are read again (after a job)
+        rows = followup.table(get_ws())
+        return render.DataGrid(pd.DataFrame(rows), height="380px", width="100%", filters=True)
+
+    @reactive.effect
+    @reactive.event(input.fu_go)
+    def _fu_go():
+        c = input.fu_country()
+        if not c:
+            ui.notification_show("Choose a country first.", type="warning")
+            return
+        start("Record for %s: %s" % (c, input.fu_kind()), pipelines.make_followup(c, input.fu_kind(), (input.fu_note() or "").strip()))
+
     def feedback_card(d):
         """Downloads written by the last inspection: the summary, the pending admin data, and what each country has to correct or send."""
         btns = []
@@ -1496,7 +1611,7 @@ def server(input, output, session):
     @render.data_frame
     def subs_table():
         d = subs()
-        cols = ["File", "Not admin data", "Layout", "Status", "Decision", "Countries", "Records read", "New", "Clean new", "Held back", "Already there", "Other figures", "Several units",
+        cols = ["File", "Versions", "Not admin data", "Layout", "Status", "Decision", "Countries", "Records read", "New", "Clean new", "Held back", "Already there", "Other figures", "Several units",
                 "Possible duplicates", "Also in another file", "Errors", "Warnings", "Left out", "Note"]
         rows = [{c: r[c] for c in cols} for r in (d or {}).get("rows", [])]
         return render.DataGrid(pd.DataFrame(rows, columns=cols), height="560px", width="100%", filters=True)
@@ -1508,6 +1623,13 @@ def server(input, output, session):
             fid = input.s_file()
         except Exception:
             fid = None
+        if fid and str(fid).startswith("grp:"):
+            g = (d or {}).get("groups", {}).get(fid[4:])
+            if not g:
+                return ui.div()
+            return ui.div(ui.strong("The same file, sent %d times: " % len(g["files"])), ui.tags.ul(*[ui.tags.li(f) for f in g["files"]]),
+                          ui.span("Accept or Reject applies to every version. The records already added from one version are not added twice.", class_="note"),
+                          style="margin:0 0 12px;")
         row = next((r for r in (d or {}).get("rows", []) if r["id"] == fid), None)
         if not row:
             return ui.div()
@@ -1817,6 +1939,11 @@ def server(input, output, session):
                                                      ui.span("  every column of the live file", class_="note", style="margin-left:8px;"),
                                                      style="margin:6px 0 10px;"),
                                               ui.output_data_frame("lv_table")),
+                                 ui.nav_panel("Where records came from",
+                                              ui.p("The records that entered the live file from the countries' submissions: the file they came from, the build that added them and "
+                                                   "when it was published. A build made before this list existed shows its files only. The record-by-record list of a build is in "
+                                                   "its run folder (records_added_from_submissions_vNN.csv).", class_="note"),
+                                              ui.output_data_frame("lv_prov")),
                                  id="tabs_live")),
                 ui.nav_panel("Explore & quality", ui.navset_pill(
                 ui.nav_panel("Find records",
