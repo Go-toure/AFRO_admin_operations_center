@@ -1,2 +1,2 @@
 """AFRO Administrative Data Operations Center."""
-__version__ = "1.6.9"
+__version__ = "1.7.0"

@@ -95,6 +95,15 @@ def ensure_inputs(ctx):
     ctx.ws.pull_inputs()
     for f in ("lookup.xlsx", "geo_reference.csv"):
         need(ctx, (ctx.ws.inputs / f).is_file(), "inputs/%s is missing in the SharePoint folder (run tools/seed_store.py once)." % f)
+    if not ctx.ws.has_geo():
+        # the AFROGDB names and crosswalks (geo_reference/ of the SharePoint folder): without them the build cannot add the geo_code of the new records
+        try:
+            ctx.emit("Reading the geo reference (geo_reference/) from the SharePoint folder ...")
+            ctx.ws.pull_tree("geo_reference")
+        except Exception as e:
+            ctx.emit("NOTE: the geo reference could not be read (%s); the build will leave geo_code as it is." % e)
+        if not ctx.ws.has_geo():
+            ctx.emit("NOTE: geo_reference/ is not in the SharePoint folder, so the records of this build get no new geo_code.")
 
 
 def ensure_run(ctx, n):

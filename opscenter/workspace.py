@@ -127,7 +127,13 @@ class Workspace:
         e.update({"ADMIN_SETTINGS": str(self.engine / "admin_settings.json"), "ADMIN_LOGDIR": str(self.logs),
                   "OPS_ADMIN_SHARE_URL": config.ADMIN_URL, "OPS_DICT_SHARE_URL": config.DICT_URL,
                   "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"})
+        if self.has_geo():
+            e["AFRO_GEO_REFERENCE_DIR"] = str(self.geo)     # the build codes every record with the AFROGDB district code (geo_code / geo_match)
         return e
+
+    def has_geo(self):
+        """True when the local copy of geo_reference/ holds the AFROGDB name master the build needs."""
+        return (self.geo / "reference" / "afrogdb_geoname_master.csv").is_file()
 
     # ------------------------------------------------------------------ mapping
     def local_of(self, rel):
