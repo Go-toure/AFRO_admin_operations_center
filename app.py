@@ -1029,9 +1029,10 @@ def server(input, output, session):
 
     @reactive.calc
     def dd_data():
-        f = lv_f()
-        if f is None:
+        d0 = lv()                      # the whole live file: the drill-down does not use the filters above
+        if not d0:
             return None
+        f = d0["slim"]
         sub_ = livedata.drill_rows(f, lv_dd())
         lvl = dd_level(lv_dd())
         if lvl == "records":
@@ -1050,7 +1051,8 @@ def server(input, output, session):
         lvl, t, sub_ = d
         what = {"country": "Click a country to see its provinces.", "province": "Click a province to see its districts.",
                 "district": "Click a district to see its records.", "records": "The records of this district."}[lvl]
-        return ui.p(ui.strong(" \u203a ".join(parts)), "   %s records.  %s" % (livedata.fmt_int(len(sub_)), what), class_="note")
+        return ui.p(ui.strong(" \u203a ".join(parts)), "   %s of %s records of the live file.  %s" % (
+            livedata.fmt_int(len(sub_)), livedata.fmt_int(len(lv()["slim"])), what), class_="note")
 
     @render.data_frame
     def lv_dd_table():
@@ -1092,7 +1094,7 @@ def server(input, output, session):
         lv_dd.set(p)
 
     @reactive.effect
-    @reactive.event(input.lv_dd_top, input.lv_reset)
+    @reactive.event(input.lv_dd_top)
     def _dd_top():
         lv_dd.set({"country": None, "province": None, "district": None})
 
@@ -1110,6 +1112,21 @@ def server(input, output, session):
             yield livedata.records_csv(full)
         else:
             yield t.to_csv(index=False).encode("utf-8-sig")
+
+    def lv_whole():
+        """Every record of the loaded source, every column (no filter)."""
+        df, _ = explore.load_frame(get_ws(), lv()["spec"])
+        full = df.copy()
+        full.insert(0, "Excel_row", full.index + 2)
+        return full
+
+    @render.download(filename=lambda: "Live_data_whole_file_%s.csv" % time.strftime("%Y%m%d"))
+    def lv_dd_all_csv():
+        yield livedata.records_csv(lv_whole())
+
+    @render.download(filename=lambda: "Live_data_whole_file_%s.xlsx" % time.strftime("%Y%m%d"))
+    def lv_dd_all_xlsx():
+        yield livedata.records_xlsx(lv_whole())
 
     # ---------------------------------------------------------------- overview
     @render.ui
@@ -1579,12 +1596,14 @@ def server(input, output, session):
                                                                                          "response": "response (campaign)", "round": "round"}, width="300px"),
                                               ui.output_ui("lv_ch_cov"), ui.output_data_frame("lv_cov_table")),
                                  ui.nav_panel("Drill-down",
-                                              ui.p("Go down level by level: click a country, then a province, then a district to see its records. "
-                                                   "It follows the filters above.", class_="note"),
+                                              ui.p("The whole live file, whatever the filters above say: click a country, then a province, then a district to see its records.", class_="note"),
                                               ui.output_ui("lv_dd_path"),
                                               ui.div(ui.input_action_button("lv_dd_back", "Back one level", class_="btn-outline-secondary"),
                                                      ui.input_action_button("lv_dd_top", "Start again", class_="btn-outline-secondary", style="margin-left:8px;"),
                                                      ui.download_button("lv_dd_dl", "Download this table (csv)", class_="btn-outline-secondary", style="margin-left:8px;"),
+                                                     ui.download_button("lv_dd_all_csv", "Download the whole live file (csv)", class_="btn-outline-secondary", style="margin-left:8px;"),
+                                                     ui.download_button("lv_dd_all_xlsx", "Download the whole live file (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
+                                                     ui.span("  the xlsx of the whole file takes a minute or two", class_="note", style="margin-left:8px;"),
                                                      style="margin:6px 0 10px;"),
                                               ui.output_data_frame("lv_dd_table")),
                                  ui.nav_panel("Records",
