@@ -29,6 +29,7 @@ A job copies what the engine needs from the folder, runs the engine, and saves e
 | Home | live data file and dictionary on SharePoint, last published version, builds, backups, what is next; the Quick start guide opens at the bottom | everybody |
 | Cycle | four small tabs in the order of the work. Run: the Autopilot (the whole cycle with no manual step) or back up, build, check, store values, publish (the whole-cycle button refreshes the scope if it is due, on a machine with R, then inspects the submissions first) (data + dictionary, ending with the SharePoint clean-up). Submissions: inspect the countries' files, accept or reject. Lookup & wiring: scope refresh, lookup fixes, corrections preview, pending rounds. Files & feedback: any file of a build; the feedback workbook and fix list of one country | operators decide (backup, reading and downloads: everybody) |
 | Pending admin data | the rounds with nothing received 15 days after their start: one view (country, response, round, start date, end date, delay, not due yet) filtered by country, status, year, month or the last X months, with its own download; the other lists below it, close a round, refresh the list, download | operators close, everybody reads |
+| Live data | the live file (newest backup, a build or an older backup) with filters (country, province, district, response, vaccine, round, year, month, last X months), tiles, charts (by country, over time, by vaccine / response / round, share of districts reaching 95% or more), the records table and the download of the filtered records (csv, xlsx; every column) | everybody reads |
 | Explore & quality | Find records in the live file, any build or any backup; Quality & compare: inspect a version, find duplicates, compare two versions | everybody |
 | Rules & activity | Rules: what the system knows and fixes, and the standing decisions. Activity: who ran what, when, with what result | everybody |
 
@@ -53,6 +54,9 @@ or two servers). Operators can build and publish; viewers can only look and down
   re-saved is not a change). Same for the data file: a file identical to the live one is not uploaded again.
 * SharePoint keeps no version history of the data file or the dictionary; overwritten files of 1 MB or more in the app
   folder lose their old versions at once. The 3 most recent earlier dictionaries are kept in the folder.
+* **The country workbooks of earlier days are removed** from `submissions/feedback_by_country` at the end of a job (the PC keeps them in `_previous`).
+* **A file a job has written but not yet sent is never overwritten** by reading the folder again: the publish writes the published flag
+  (`state.json`, the run's `manifest.json`) and the job sends it when it ends (the autopilot sends it right after the publish).
 * Deleted files and versions go to the SharePoint recycle bin first; the space is only freed when the site recycle bin
   is emptied (Site contents > Recycle bin), or by IT.
 * Each run adds about 30 MB (build, dictionary, audit, quality report, feedback). Old runs can be removed by hand from

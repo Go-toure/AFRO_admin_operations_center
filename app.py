@@ -4,12 +4,13 @@ import io
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pandas as pd
 from shiny import App, reactive, render, ui
 
-from opscenter import __version__, auth, config, explore, guide, overview, pipelines, scope_refresh, submissions_view, wiring_view
+from opscenter import __version__, auth, config, explore, guide, livedata, overview, pipelines, scope_refresh, submissions_view, wiring_view
 from opscenter.jobs import JobManager
 from opscenter.store import Store, StoreError
 from opscenter.workspace import Workspace
@@ -57,6 +58,9 @@ pre.console, .consolewrap pre { background:#0f1b24; color:#d6e4ee; padding:12px 
 .btn-who { background:var(--who); border-color:var(--who); color:#fff; }
 .btn-who:hover { background:#0083bd; color:#fff; }
 .note { color:var(--mut); font-size:.85rem; }
+.chart { background:#fff; border:1px solid var(--line); border-radius:10px; padding:8px 10px; margin:4px 0 14px; }
+.chart svg text { font-size:12px; fill:var(--ink); }
+.chart .bar:hover .m { opacity:.75; }
 .nav-tabs .nav-link.active { border-top:3px solid var(--who); font-weight:600; }
 .guide-card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:18px 22px; margin-bottom:14px; }
 .guide-head { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; background:linear-gradient(135deg,#f3f8fc,#e9f1f8); }
@@ -161,7 +165,7 @@ def server(input, output, session):
             try:
                 src = explore.sources(ws)
                 ch = {v: l for v, l in src}
-                for i in ("x_source", "q_source", "d_source", "q_a", "q_b"):
+                for i in ("x_source", "q_source", "d_source", "q_a", "q_b", "lv_source"):
                     ui.update_select(i, choices=ch, selected=list(ch)[0] if i != "q_b" else (list(ch)[1] if len(ch) > 1 else list(ch)[0]))
                 ui.update_select("f_run", choices=[r["version"] for r in d["runs"]] or [""])
             except Exception:
@@ -818,6 +822,197 @@ def server(input, output, session):
         r = last_find()
         yield (r[0] if r else pd.DataFrame()).to_csv(index=False).encode("utf-8-sig")
 
+    # ---------------------------------------------------------------- live data
+    lv = reactive.value(None)          # {"slim": the columns the tab works on, "label", "spec", "at"}
+
+    @reactive.extended_task
+    async def lv_task(spec):
+        def work():
+            df, label = explore.load_frame(get_ws(), spec)
+            return {"slim": livedata.slim(df), "label": label, "spec": spec, "at": time.strftime("%Y-%m-%d %H:%M")}
+        return await asyncio.to_thread(work)
+
+    @reactive.effect
+    @reactive.event(input.lv_load)
+    def _lv_load():
+        if JM.busy():
+            ui.notification_show("A job is running; try again when it ends (memory).", type="warning")
+            return
+        ui.notification_show("Reading the file (the first time takes about a minute) ...", duration=6)
+        lv_task(input.lv_source())
+
+    @reactive.effect
+    def _lv_done():
+        if lv_task.status() == "success":
+            lv.set(lv_task.result())
+        elif lv_task.status() == "error":
+            ui.notification_show("Could not read the data: %s" % lv_task.error(), type="error", duration=10)
+
+    @reactive.effect
+    def _lv_choices():
+        d = lv()
+        if not d:
+            return
+        sl = d["slim"]
+        ui.update_selectize("lv_country", choices=livedata.choices(sl, "Country"), selected=[])
+        ui.update_selectize("lv_response", choices=livedata.choices(sl, "Response"), selected=[], server=True)
+        ui.update_selectize("lv_vaccine", choices=livedata.choices(sl, "Vaccine_type"), selected=[])
+        ui.update_selectize("lv_round", choices=livedata.choices(sl, "Round_Add"), selected=[])
+        ui.update_select("lv_year", choices=["All"] + livedata.year_choices(sl), selected="All")
+
+    @reactive.effect
+    def _lv_province():
+        d = lv()
+        if not d:
+            return
+        sl, c = d["slim"], (input.lv_country() or ())
+        sub_ = sl[sl["Country"].isin(c)] if c else sl
+        with reactive.isolate():
+            cur = list(input.lv_province() or ())
+        ch = livedata.choices(sub_, "Province")
+        ui.update_selectize("lv_province", choices=ch, selected=[x for x in cur if x in ch])
+
+    @reactive.effect
+    def _lv_district():
+        d = lv()
+        if not d:
+            return
+        sl, c, pv = d["slim"], (input.lv_country() or ()), (input.lv_province() or ())
+        sub_ = sl[sl["Country"].isin(c)] if c else sl
+        if pv:
+            sub_ = sub_[sub_["Province"].isin(pv)]
+        with reactive.isolate():
+            cur = list(input.lv_district() or ())
+        ch = livedata.choices(sub_, "District")
+        ui.update_selectize("lv_district", choices=ch, selected=[x for x in cur if x in ch], server=True)
+
+    @reactive.calc
+    def lv_f():
+        d = lv()
+        if not d:
+            return None
+        return livedata.apply_filters(
+            d["slim"], input.lv_country() or (), input.lv_province() or (), input.lv_district() or (), input.lv_response() or (),
+            input.lv_vaccine() or (), input.lv_round() or (), input.lv_year(), input.lv_month(), input.lv_last())
+
+    @reactive.effect
+    @reactive.event(input.lv_reset)
+    def _lv_reset():
+        for i in ("lv_country", "lv_province", "lv_district", "lv_response", "lv_vaccine", "lv_round"):
+            ui.update_selectize(i, selected=[])
+        ui.update_select("lv_year", selected="All")
+        ui.update_select("lv_month", selected="All")
+        ui.update_numeric("lv_last", value=0)
+
+    @render.ui
+    def lv_status():
+        d, f = lv(), lv_f()
+        if d is None:
+            return ui.p("Not loaded yet: choose the source and click 'Load the data'.", class_="note", style="margin-top:34px;")
+        return ui.p("%s, loaded %s: %s records in total, %s match the filters." % (
+            d["label"], d["at"], livedata.fmt_int(len(d["slim"])), livedata.fmt_int(len(f))), class_="note", style="margin-top:34px;")
+
+    @render.ui
+    def lv_tiles():
+        f = lv_f()
+        if f is None:
+            return ui.div()
+        t = livedata.totals(f)
+        cov = livedata.coverage(f, "country")
+        u, r = int(cov[livedata.COV_COLUMNS[1]].sum()) if len(cov) else 0, int(cov[livedata.COV_COLUMNS[2]].sum()) if len(cov) else 0
+        return ui.layout_columns(
+            tile("Records", livedata.fmt_int(t["records"]), "%s without a date" % livedata.fmt_int(t["no_date"]) if t["no_date"] else "rows of the live file"),
+            tile("Countries", str(t["countries"]), "%s districts" % livedata.fmt_int(t["districts"])),
+            tile("Responses", livedata.fmt_int(t["responses"]), "campaign names"),
+            tile("Target (polio)", livedata.fmt_compact(t["target"]), "sum of PopPolio"),
+            tile("Vaccinated (polio)", livedata.fmt_compact(t["vaccinated"]), "sum of TotalNbrVaccPolio"),
+            tile("Districts at 95% or more", ("%.0f%%" % (100.0 * r / u)) if u else "-", "%s of %s district-rounds" % (livedata.fmt_int(r), livedata.fmt_int(u))),
+            col_widths=[2, 2, 2, 2, 2, 2])
+
+    def lv_measure():
+        m = input.lv_measure()
+        return m if m in livedata.MEASURES else "records"
+
+    @render.ui
+    def lv_ch_country():
+        f = lv_f()
+        if f is None:
+            return ui.p("Load the data first.", class_="note")
+        m = lv_measure()
+        return ui.HTML(livedata.hbar(livedata.aggregate(f, "country", m), aria="%s by country" % livedata.MEASURES[m]))
+
+    @render.ui
+    def lv_ch_time():
+        f = lv_f()
+        if f is None:
+            return ui.p("Load the data first.", class_="note")
+        m = lv_measure()
+        g = input.lv_tgrp() if input.lv_tgrp() in ("year", "month") else "year"
+        return ui.HTML(livedata.vbar(livedata.aggregate(f, g, m), aria="%s by %s of the start date" % (livedata.MEASURES[m], g)))
+
+    @render.ui
+    def lv_ch_by():
+        f = lv_f()
+        if f is None:
+            return ui.p("Load the data first.", class_="note")
+        m, by = lv_measure(), (input.lv_by() if input.lv_by() in ("vaccine", "response", "round") else "vaccine")
+        items = livedata.aggregate(f, by, m)
+        note = ui.p("The 25 largest of %d are shown." % len(items), class_="note") if by == "response" and len(items) > 25 else ui.span()
+        return ui.TagList(ui.HTML(livedata.hbar(livedata.top(items, 25) if by == "response" else items, aria="%s by %s" % (livedata.MEASURES[m], by))), note)
+
+    def lv_cov():
+        f = lv_f()
+        if f is None:
+            return None
+        by = input.lv_covby() if input.lv_covby() in ("country", "year", "vaccine", "response", "round") else "country"
+        return livedata.coverage(f, by)
+
+    @render.ui
+    def lv_ch_cov():
+        c = lv_cov()
+        if c is None:
+            return ui.p("Load the data first.", class_="note")
+        return ui.HTML(livedata.coverage_chart(c))
+
+    @render.data_frame
+    def lv_cov_table():
+        c = lv_cov()
+        if c is None or len(c) == 0:
+            return render.DataGrid(pd.DataFrame({"": ["nothing"]}), width="100%")
+        return render.DataGrid(c, height="260px", width="100%")
+
+    @render.ui
+    def lv_count():
+        f = lv_f()
+        if f is None:
+            return ui.p("Load the data first.", class_="note")
+        extra = " The table shows the first 1,000; the downloads have all of them, with every column." if len(f) > 1000 else ""
+        return ui.p("%s record(s) match the filters.%s" % (livedata.fmt_int(len(f)), extra), class_="note")
+
+    @render.data_frame
+    def lv_table():
+        f = lv_f()
+        if f is None or len(f) == 0:
+            return render.DataGrid(pd.DataFrame({"": ["nothing to show"]}), width="100%")
+        t = f[livedata.TABLE_COLUMNS].head(1000).copy()
+        t["SIA_date"] = t["SIA_date"].astype(str).str[:10]
+        return render.DataGrid(t.astype(str), height="520px", filters=True, width="100%")
+
+    def lv_full():
+        d, f = lv(), lv_f()
+        df, _ = explore.load_frame(get_ws(), d["spec"])
+        full = df.loc[f.index].copy()
+        full.insert(0, "Excel_row", full.index + 2)
+        return full
+
+    @render.download(filename=lambda: "Live_data_%s.csv" % time.strftime("%Y%m%d"))
+    def lv_dl_csv():
+        yield livedata.records_csv(lv_full())
+
+    @render.download(filename=lambda: "Live_data_%s.xlsx" % time.strftime("%Y%m%d"))
+    def lv_dl_xlsx():
+        yield livedata.records_xlsx(lv_full())
+
     # ---------------------------------------------------------------- overview
     @render.ui
     def overview_ui():
@@ -1244,6 +1439,55 @@ def server(input, output, session):
                                                     ui.input_text("w_note", "Why (kept with the decision)", width="100%"),
                                                     ui.input_action_button("w_close", "Close this round", class_="btn-outline-danger")),
                                  id="p_more", open=False, class_="mt-3")),
+                ui.nav_panel("Live data",
+                             ui.p("Look at the live file: filter it, see it in charts and download the records. The data are read from the newest backup of the live file "
+                                  "(or another source); nothing is changed.", class_="note"),
+                             ui.layout_columns(
+                                 ui.input_select("lv_source", "Source", choices={"live": "live file (newest backup)"}, width="100%"),
+                                 ui.div(ui.input_action_button("lv_load", "Load the data", class_="btn-who"), style="margin-top:32px;"),
+                                 ui.output_ui("lv_status"),
+                                 col_widths=[4, 2, 6]),
+                             ui.layout_columns(
+                                 ui.input_selectize("lv_country", "Country", choices=[], multiple=True, width="100%"),
+                                 ui.input_selectize("lv_province", "Province", choices=[], multiple=True, width="100%"),
+                                 ui.input_selectize("lv_district", "District", choices=[], multiple=True, width="100%"),
+                                 col_widths=[4, 4, 4]),
+                             ui.layout_columns(
+                                 ui.input_selectize("lv_response", "Response (campaign)", choices=[], multiple=True, width="100%"),
+                                 ui.input_selectize("lv_vaccine", "Vaccine", choices=[], multiple=True, width="100%"),
+                                 ui.input_selectize("lv_round", "Round", choices=[], multiple=True, width="100%"),
+                                 col_widths=[5, 4, 3]),
+                             ui.layout_columns(
+                                 ui.input_select("lv_year", "Year of the start date", choices=["All"], width="100%"),
+                                 ui.input_select("lv_month", "Month", choices=["All"] + MONTHS, width="100%"),
+                                 ui.input_numeric("lv_last", "Last X months (0 = all)", 0, min=0, max=240, width="100%"),
+                                 ui.div(ui.input_action_button("lv_reset", "Clear the filters", class_="btn-outline-secondary"), style="margin-top:32px;"),
+                                 col_widths=[3, 3, 3, 3]),
+                             ui.output_ui("lv_tiles"),
+                             ui.navset_pill(
+                                 ui.nav_panel("Charts",
+                                              ui.layout_columns(
+                                                  ui.input_select("lv_measure", "Measure (country, time and third chart)", choices=livedata.MEASURES, width="100%"),
+                                                  ui.input_select("lv_tgrp", "Time: by", choices={"year": "year", "month": "month"}, width="100%"),
+                                                  ui.input_select("lv_by", "Third chart: by", choices={"vaccine": "vaccine", "response": "response (campaign)", "round": "round"}, width="100%"),
+                                                  col_widths=[5, 3, 4]),
+                                              ui.h5("By country"), ui.output_ui("lv_ch_country"),
+                                              ui.h5("Over time (start date)"), ui.output_ui("lv_ch_time"),
+                                              ui.h5("By vaccine, response or round"), ui.output_ui("lv_ch_by"),
+                                              ui.h5("Districts reaching 95% or more"),
+                                              ui.p("The share of district-rounds (a district in a campaign round) whose polio coverage, doses given divided by the target "
+                                                   "(PopPolio), is 95% or more. A district-round with no target is left out of the share and counted in the table.", class_="note"),
+                                              ui.input_select("lv_covby", "By", choices={"country": "country", "year": "year", "vaccine": "vaccine",
+                                                                                         "response": "response (campaign)", "round": "round"}, width="300px"),
+                                              ui.output_ui("lv_ch_cov"), ui.output_data_frame("lv_cov_table")),
+                                 ui.nav_panel("Records",
+                                              ui.output_ui("lv_count"),
+                                              ui.div(ui.download_button("lv_dl_csv", "Download the records (csv)", class_="btn-outline-secondary"),
+                                                     ui.download_button("lv_dl_xlsx", "Download the records (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
+                                                     ui.span("  every column of the live file; the xlsx of the whole file takes a minute or two", class_="note", style="margin-left:8px;"),
+                                                     style="margin:6px 0 10px;"),
+                                              ui.output_data_frame("lv_table")),
+                                 id="tabs_live")),
                 ui.nav_panel("Explore & quality", ui.navset_pill(
                 ui.nav_panel("Find records",
                              ui.layout_columns(
