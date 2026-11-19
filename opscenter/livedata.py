@@ -107,16 +107,23 @@ def aggregate(f, by, measure="records"):
     return sorted(items, key=lambda x: (-x[1], x[0]))
 
 
-def coverage(f, by="country", threshold=THRESHOLD):
-    """The share of districts reaching the threshold, by country / year / vaccine / response / round (see the module note)."""
-    if len(f) == 0:
-        return pd.DataFrame(columns=COV_COLUMNS)
+def _units(f, threshold=THRESHOLD):
+    """One row per district in a campaign round (country, province, district, response, round): target, doses, first date, vaccine, and
+    _u (has a target), _n (no target), _r (has a target and reaches the threshold)."""
     g = f.groupby(["Country", "Province", "District", "Response", "Round_Add"], sort=False, dropna=False).agg(
         t=("_target", "sum"), v=("_vac", "sum"), start=("_date", "min"), vaccine=("Vaccine_type", "first")).reset_index()
     has = g["t"] > 0
     g["_u"] = has.astype(int)
     g["_n"] = (~has).astype(int)
     g["_r"] = (has & (g["v"] / g["t"].where(has) * 100 >= threshold)).astype(int)
+    return g
+
+
+def coverage(f, by="country", threshold=THRESHOLD):
+    """The share of districts reaching the threshold, by country / year / vaccine / response / round (see the module note)."""
+    if len(f) == 0:
+        return pd.DataFrame(columns=COV_COLUMNS)
+    g = _units(f, threshold)
     if by == "year":
         key = g["start"].dt.year.map(lambda y: str(int(y)) if y == y else "(no date)")
     else:
@@ -131,6 +138,43 @@ def coverage(f, by="country", threshold=THRESHOLD):
     return out.sort_values([COV_COLUMNS[3], COV_COLUMNS[1]], ascending=[False, False], na_position="last").reset_index(drop=True)
 
 
+LEVELS = ("country", "province", "district")
+_LEVEL_COL = {"country": "Country", "province": "Province", "district": "District"}
+BLANK = "(blank)"
+
+
+def drill(f, level):
+    """The table of one level of the drill-down (country, province or district), for the rows of `f`: records, districts, responses, target,
+    doses, coverage and the share of district-rounds at 95% or more. The first column is the name; an empty name is shown as (blank)."""
+    cols = ["Records", "Districts", "Responses", "Target (polio)", "Vaccinated (polio)", "Coverage (%)", "Districts at 95%+ (%)"]
+    name = _LEVEL_COL[level]
+    if len(f) == 0:
+        return pd.DataFrame(columns=[name] + cols)
+    g = f.groupby(name, dropna=False)
+    out = pd.DataFrame({"Records": g.size(), "Responses": g["Response"].nunique(), "Target (polio)": g["_target"].sum(), "Vaccinated (polio)": g["_vac"].sum()})
+    out["Districts"] = f.drop_duplicates(["Country", "Province", "District"]).groupby(name).size()
+    out["Coverage (%)"] = (out["Vaccinated (polio)"] / out["Target (polio)"].where(out["Target (polio)"] > 0) * 100).round(1)
+    u = _units(f)
+    k = u.groupby(name).agg(u=("_u", "sum"), r=("_r", "sum"))
+    out["Districts at 95%+ (%)"] = (k["r"] / k["u"].where(k["u"] > 0) * 100).round(1)
+    out = out.reset_index().rename(columns={"index": name})
+    out[name] = out[name].astype(str)
+    out[name] = out[name].where(out[name].str.strip() != "", BLANK)
+    out["Target (polio)"] = out["Target (polio)"].round(0).astype("int64")
+    out["Vaccinated (polio)"] = out["Vaccinated (polio)"].round(0).astype("int64")
+    return out[[name] + cols].sort_values(["Records", name], ascending=[False, True]).reset_index(drop=True)
+
+
+def drill_rows(f, path):
+    """The rows of `f` inside the chosen path (a dict with country, province, district; None where not chosen yet)."""
+    m = pd.Series(True, index=f.index)
+    for lv in LEVELS:
+        v = path.get(lv)
+        if v is not None:
+            m &= f[_LEVEL_COL[lv]] == ("" if v == BLANK else v)
+    return f[m]
+
+
 def top(items, n):
     """The n largest items; the rest are not shown (a chart of hundreds of campaigns would be unreadable)."""
     return sorted(items, key=lambda x: -x[1])[:n] if len(items) > n else items
@@ -141,14 +185,18 @@ def fmt_int(v):
     return "{:,.0f}".format(v)
 
 
+def _trim(x):
+    return ("%.1f" % x).rstrip("0").rstrip(".")
+
+
 def fmt_compact(v):
     a = abs(v)
     if a >= 1e9:
-        return "%.1fB" % (v / 1e9)
+        return _trim(v / 1e9) + "B"
     if a >= 1e6:
-        return "%.1fM" % (v / 1e6)
+        return _trim(v / 1e6) + "M"
     if a >= 1e3:
-        return "%.0fk" % (v / 1e3) if a >= 1e5 else "%.1fk" % (v / 1e3)
+        return _trim(v / 1e3) + "k"
     return "%g" % v
 
 
@@ -209,7 +257,7 @@ def vbar(items, fmt=fmt_int, aria="column chart"):
     slot = pw / n
     bw = max(2.0, min(40.0, slot * 0.7))
     per = 52 if max(len(str(l)) for l, _ in items) > 4 else 36
-    step = max(1, math.ceil(n / max(1, int(pw / per))))
+    every = max(1, math.ceil(n / max(1, int(pw / per))))
     out = ['<div class="chart"><svg viewBox="0 0 %d %d" width="100%%" role="img" aria-label="%s">' % (w, h, _esc(aria))]
     for k in range(k_int + 1):
         y = mt + ph - ph * k / k_int
@@ -221,7 +269,7 @@ def vbar(items, fmt=fmt_int, aria="column chart"):
         out.append('<g class="bar"><title>%s</title><rect x="%.1f" y="%d" width="%.1f" height="%d" fill="transparent"/>'
                    '<rect class="m" x="%.1f" y="%.1f" width="%.1f" height="%.1f" rx="2" fill="%s"/></g>'
                    % (_esc("%s: %s" % (l, fmt(v))), ml + i * slot, mt, slot, ph, x, mt + ph - bh, bw, bh, COLOR))
-        if i % step == 0:
+        if i % every == 0:
             out.append('<text x="%.1f" y="%d" text-anchor="middle">%s</text>' % (ml + i * slot + slot / 2, h - mb + 16, _esc(l)))
     out.append("</svg></div>")
     return "".join(out)

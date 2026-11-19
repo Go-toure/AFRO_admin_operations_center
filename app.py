@@ -1013,6 +1013,104 @@ def server(input, output, session):
     def lv_dl_xlsx():
         yield livedata.records_xlsx(lv_full())
 
+    # ---- drill-down: country > province > district > records
+    lv_dd = reactive.value({"country": None, "province": None, "district": None})
+
+    def dd_level(p):
+        for l in livedata.LEVELS:
+            if p.get(l) is None:
+                return l
+        return "records"
+
+    @reactive.effect
+    @reactive.event(lv)
+    def _dd_new_load():
+        lv_dd.set({"country": None, "province": None, "district": None})
+
+    @reactive.calc
+    def dd_data():
+        f = lv_f()
+        if f is None:
+            return None
+        sub_ = livedata.drill_rows(f, lv_dd())
+        lvl = dd_level(lv_dd())
+        if lvl == "records":
+            t = sub_[livedata.TABLE_COLUMNS].head(1000).copy()
+            t["SIA_date"] = t["SIA_date"].astype(str).str[:10]
+            return lvl, t.astype(str), sub_
+        return lvl, livedata.drill(sub_, lvl), sub_
+
+    @render.ui
+    def lv_dd_path():
+        d = dd_data()
+        if d is None:
+            return ui.p("Load the data first.", class_="note")
+        p = lv_dd()
+        parts = ["All countries"] + [p[l] for l in livedata.LEVELS if p.get(l) is not None]
+        lvl, t, sub_ = d
+        what = {"country": "Click a country to see its provinces.", "province": "Click a province to see its districts.",
+                "district": "Click a district to see its records.", "records": "The records of this district."}[lvl]
+        return ui.p(ui.strong(" \u203a ".join(parts)), "   %s records.  %s" % (livedata.fmt_int(len(sub_)), what), class_="note")
+
+    @render.data_frame
+    def lv_dd_table():
+        d = dd_data()
+        if d is None or len(d[1]) == 0:
+            return render.DataGrid(pd.DataFrame({"": ["nothing to show"]}), width="100%")
+        lvl, t, _ = d
+        return render.DataGrid(t, height="440px", width="100%", filters=(lvl == "records"),
+                               selection_mode="row" if lvl != "records" else "none")
+
+    @reactive.effect
+    async def _dd_click():
+        try:
+            sel = lv_dd_table.cell_selection()
+        except Exception:
+            return
+        rows = tuple((sel or {}).get("rows") or ())
+        if not rows:
+            return
+        with reactive.isolate():
+            d, p = dd_data(), dict(lv_dd())
+        if d is None or d[0] == "records" or rows[0] >= len(d[1]):
+            return
+        p[d[0]] = str(d[1].iloc[rows[0], 0])
+        lv_dd.set(p)
+        try:
+            await lv_dd_table.update_cell_selection(None)
+        except Exception:
+            pass
+
+    @reactive.effect
+    @reactive.event(input.lv_dd_back)
+    def _dd_back():
+        p = dict(lv_dd())
+        for l in reversed(livedata.LEVELS):
+            if p.get(l) is not None:
+                p[l] = None
+                break
+        lv_dd.set(p)
+
+    @reactive.effect
+    @reactive.event(input.lv_dd_top, input.lv_reset)
+    def _dd_top():
+        lv_dd.set({"country": None, "province": None, "district": None})
+
+    @render.download(filename=lambda: "Live_data_drilldown_%s.csv" % time.strftime("%Y%m%d"))
+    def lv_dd_dl():
+        d = dd_data()
+        if d is None:
+            yield b""
+            return
+        lvl, t, sub_ = d
+        if lvl == "records":
+            df, _ = explore.load_frame(get_ws(), lv()["spec"])
+            full = df.loc[sub_.index].copy()
+            full.insert(0, "Excel_row", full.index + 2)
+            yield livedata.records_csv(full)
+        else:
+            yield t.to_csv(index=False).encode("utf-8-sig")
+
     # ---------------------------------------------------------------- overview
     @render.ui
     def overview_ui():
@@ -1448,14 +1546,14 @@ def server(input, output, session):
                                  ui.output_ui("lv_status"),
                                  col_widths=[4, 2, 6]),
                              ui.layout_columns(
-                                 ui.input_selectize("lv_country", "Country", choices=[], multiple=True, width="100%"),
-                                 ui.input_selectize("lv_province", "Province", choices=[], multiple=True, width="100%"),
-                                 ui.input_selectize("lv_district", "District", choices=[], multiple=True, width="100%"),
+                                 ui.input_selectize("lv_country", "Country", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
+                                 ui.input_selectize("lv_province", "Province", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
+                                 ui.input_selectize("lv_district", "District", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
                                  col_widths=[4, 4, 4]),
                              ui.layout_columns(
-                                 ui.input_selectize("lv_response", "Response (campaign)", choices=[], multiple=True, width="100%"),
-                                 ui.input_selectize("lv_vaccine", "Vaccine", choices=[], multiple=True, width="100%"),
-                                 ui.input_selectize("lv_round", "Round", choices=[], multiple=True, width="100%"),
+                                 ui.input_selectize("lv_response", "Response (campaign)", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
+                                 ui.input_selectize("lv_vaccine", "Vaccine", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
+                                 ui.input_selectize("lv_round", "Round", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
                                  col_widths=[5, 4, 3]),
                              ui.layout_columns(
                                  ui.input_select("lv_year", "Year of the start date", choices=["All"], width="100%"),
@@ -1480,6 +1578,15 @@ def server(input, output, session):
                                               ui.input_select("lv_covby", "By", choices={"country": "country", "year": "year", "vaccine": "vaccine",
                                                                                          "response": "response (campaign)", "round": "round"}, width="300px"),
                                               ui.output_ui("lv_ch_cov"), ui.output_data_frame("lv_cov_table")),
+                                 ui.nav_panel("Drill-down",
+                                              ui.p("Go down level by level: click a country, then a province, then a district to see its records. "
+                                                   "It follows the filters above.", class_="note"),
+                                              ui.output_ui("lv_dd_path"),
+                                              ui.div(ui.input_action_button("lv_dd_back", "Back one level", class_="btn-outline-secondary"),
+                                                     ui.input_action_button("lv_dd_top", "Start again", class_="btn-outline-secondary", style="margin-left:8px;"),
+                                                     ui.download_button("lv_dd_dl", "Download this table (csv)", class_="btn-outline-secondary", style="margin-left:8px;"),
+                                                     style="margin:6px 0 10px;"),
+                                              ui.output_data_frame("lv_dd_table")),
                                  ui.nav_panel("Records",
                                               ui.output_ui("lv_count"),
                                               ui.div(ui.download_button("lv_dl_csv", "Download the records (csv)", class_="btn-outline-secondary"),
