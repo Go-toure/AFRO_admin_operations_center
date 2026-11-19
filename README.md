@@ -164,6 +164,10 @@ send. The **Submissions** tab runs four things, all with the engine's `submissio
    The **What is new** box at the top of the tab lists the files that arrived since an inspection you choose (the latest arrival by default), by
    country and file, with the date of the file on SharePoint, a mark for a changed version of a known file, and the new / clean / held-back records
    they bring. Files inside a zip are counted under their zip; a zip whose files were read under another path is not shown as unread.
+   The tiles also count the files that are **not admin data** (LQAS, IM / monitoring, AEFI, other: supplies, call-in, summaries): they are read to be
+   recognised, add no record and are never in the records held back. The Files table has a column with the kind, and column filters.
+   The tiles are written in plain words, and a box **Records held back: why** sorts the held-back records by reason (looks like a record already in the live
+   file, no target population, matches several live records, a key variable empty, ...) with the countries concerned.
 2. **Accept / Reject**: an operator decides per file; a blocked file cannot be accepted. The decision, who and the note are in the ledger.
    Four automatic rules (setting `submissions_auto`, on by default) take what is safe without a decision: harmless findings only;
    findings the lookup confirms; the same findings as a file a person accepted before; and the clean records of any file that is

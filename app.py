@@ -1334,12 +1334,28 @@ def server(input, output, session):
         if not d.get("configured"):
             return ui.div(ui.p("The submissions folder is not connected. Set the variable OPS_SUBMISSIONS_SHARE_URL to the share link of the "
                                "Admin_data_submissions folder (see DEPLOY.md).", class_="note"), class_="stepcard")
-        tiles = [tile("Files in the folder", str(d["in_folder"]), "%d not inspected yet" % len(d["not_inspected"]) if d["not_inspected"] else "all inspected"),
-                 tile("Waiting for a person", str(d["waiting"]), "files that no rule takes"),
-                 tile("Taken by rules or accepted", str(d["by_rules"] + d["accepted"]), "%d by the automatic rules; %d new clean records" % (d["by_rules"], d["clean_new"])),
-                 tile("Records held back", str(d["held_back"]), "with a reason, see the country feedback"),
-                 tile("Pending admin data", str(d["pending"][0]) if d.get("pending") else "-", ("rounds with nothing received 15 days after the start; %d to check" % d["pending"][1]) if d.get("pending") else "inspect to compute"),
-                 tile("Changed since inspected", str(len(d["changed"])), "inspect again" if d["changed"] else "none")]
+        def short(r):
+            return {"Looks like a record": "look like records already in the live file",
+                    "No target population": "have no target population",
+                    "Matches several live": "match several live records"}.get(next((k for k in ("Looks like a record", "No target population", "Matches several live") if r.startswith(k)), ""), r[:1].lower() + r[1:])
+        held = d.get("held_reasons") or []
+        held_txt = ("Records that look new but were kept out of the live file: " + "; ".join("%d %s" % (h["Records"], short(h["Reason"])) for h in held[:3]) +
+                    ". Details just below.") if held else "New-looking records kept out of the live file because of a problem. None."
+        kinds = ", ".join("%s %d" % (k, v) for k, v in sorted(d["not_admin_kinds"].items(), key=lambda kv: -kv[1]))
+        tiles = [tile("Files in the folder", str(d["in_folder"]),
+                      ("%d arrived and not read yet: run 'Inspect the submissions'." % len(d["not_inspected"])) if d["not_inspected"] else "Files sent by the countries. All of them have been read."),
+                 tile("Not admin data", str(d["not_admin"]),
+                      ("Files that are not coverage data (%s). Recognised and set aside; they add no record and are not counted as held back." % kinds) if d["not_admin"] else "Files that are not coverage data (LQAS, monitoring, AEFI, ...): none."),
+                 tile("Admin data that cannot be read", str(d["blocked_admin"]),
+                      "Coverage files that cannot be used (a key column is missing, for instance). The reason is in the Files table." if d["blocked_admin"] else "Coverage files that cannot be used (a key column missing, for instance): none."),
+                 tile("Already in the live file", str(d["nothing_new"]), "Files whose records are all in the live file already, or tally sheets used only as a check. Nothing to add."),
+                 tile("Waiting for a person", str(d["waiting"]), "Files with something to add that no automatic rule can take yet. Someone has to accept or reject them."),
+                 tile("Taken by rules or accepted", str(d["by_rules"] + d["accepted"]),
+                      "%d file(s) taken by the automatic rules, %d accepted by a person. Their %d clean new records enter the live file at the next build." % (d["by_rules"], d["accepted"], d["clean_new"])),
+                 tile("Records held back", str(d["held_back"]), held_txt),
+                 tile("Pending admin data", str(d["pending"][0]) if d.get("pending") else "-",
+                      ("Campaign rounds that started more than 15 days ago with no record in the live file; %d more may have been sent under another name." % d["pending"][1]) if d.get("pending") else "Run the inspection to compute."),
+                 tile("Changed since inspected", str(len(d["changed"])), "Files replaced after they were read: inspect again to read the new version." if d["changed"] else "Files replaced after they were read. None.")]
         report = ui.download_button("s_report", "Download the full report (xlsx)", class_="btn-outline-secondary") if d.get("report") else ui.span()
         decide_card = ui.div(
             ui.h5("2  Decide"),
@@ -1355,7 +1371,8 @@ def server(input, output, session):
             ui.input_action_button("s_reject", "Reject", class_="btn-outline-danger", style="margin-left:8px;"),
             class_="stepcard") if op else ui.div(ui.p("Only operators accept or reject a file.", class_="note"))
         return ui.div(
-            ui.layout_columns(*tiles, col_widths=[4, 4, 4, 4, 4, 4]),
+            ui.layout_columns(*tiles, col_widths=[4] * len(tiles)),
+            held_card(d),
             news_card(d),
             ui.div(ui.h5("1  Inspect"),
                    ui.p("Reads every file of the submissions folder (the folder itself is never changed), says whether it is in the template "
@@ -1373,6 +1390,19 @@ def server(input, output, session):
             ui.p("The records of the accepted files are added by the next Build (or the whole cycle); the Check step shows how many. "
                  "Files stay where they are and a ledger in the SharePoint folder of the app keeps every decision.", class_="note"),
         )
+
+    def held_card(d):
+        """Why records are held back, in plain words, from the last inspection."""
+        if not d.get("held_reasons"):
+            return ui.div()
+        return ui.div(ui.h5("Records held back: why"),
+                      ui.p("A record is held back when it looks new but should not go into the live file as it is. Nothing is lost: each one is listed with its "
+                           "reason in the report and in the feedback to the country, so it can be corrected or confirmed and sent again.", class_="note"),
+                      ui.output_data_frame("subs_held"), class_="stepcard", style="margin-top:14px;")
+
+    @render.data_frame
+    def subs_held():
+        return render.DataGrid(pd.DataFrame((subs() or {}).get("held_reasons", []), columns=["Reason", "Records", "Countries"]), height="auto", width="100%")
 
     def news_card(d):
         """What is new in the folder: the files that arrived since a chosen inspection, by country, with their records."""
@@ -1410,7 +1440,7 @@ def server(input, output, session):
     @render.data_frame
     def subs_news_country():
         rows = _since_rows()
-        cols = ["Country", "Files", "Not admin data", "New records", "Clean new", "Held back"]
+        cols = ["Country", "Files", "Of which not admin data", "New records", "Clean new", "Held back"]
         if not rows:
             return render.DataGrid(pd.DataFrame(columns=cols), height="auto", width="100%")
         df = pd.DataFrame(rows)
@@ -1424,7 +1454,7 @@ def server(input, output, session):
 
     @render.data_frame
     def subs_news_files():
-        cols = ["First seen", "Country", "File", "Status", "In folder (modified)", "Version", "Records read", "New", "Clean new", "Held back"]
+        cols = ["First seen", "Country", "File", "Status", "Not admin data", "In folder (modified)", "Version", "Records read", "New", "Clean new", "Held back"]
         rows = _since_rows()
         return render.DataGrid(pd.DataFrame([{c: r[c] for c in cols} for r in rows], columns=cols), height="auto", width="100%")
 
@@ -1453,10 +1483,10 @@ def server(input, output, session):
     @render.data_frame
     def subs_table():
         d = subs()
-        cols = ["File", "Layout", "Status", "Decision", "Countries", "Records read", "New", "Clean new", "Held back", "Already there", "Other figures", "Several units",
+        cols = ["File", "Not admin data", "Layout", "Status", "Decision", "Countries", "Records read", "New", "Clean new", "Held back", "Already there", "Other figures", "Several units",
                 "Possible duplicates", "Also in another file", "Errors", "Warnings", "Left out", "Note"]
         rows = [{c: r[c] for c in cols} for r in (d or {}).get("rows", [])]
-        return render.DataGrid(pd.DataFrame(rows, columns=cols), height="auto", width="100%")
+        return render.DataGrid(pd.DataFrame(rows, columns=cols), height="auto", width="100%", filters=True)
 
     @render.ui
     def s_why():
