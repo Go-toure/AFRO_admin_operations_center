@@ -56,6 +56,8 @@ or two servers). Operators can build and publish; viewers can only look and down
   folder lose their old versions at once. The 3 most recent earlier dictionaries are kept in the folder.
 * **The geo reference** (`geo_reference/` of the SharePoint folder: the AFROGDB names and crosswalks) is copied to the PC when it is missing, and every job tells the
   engine where it is (`AFRO_GEO_REFERENCE_DIR`), so a build adds the `geo_code` / `geo_match` of every record, the new ones included (1.7.0).
+* **The ledger of the submissions** is read by the app itself before each job, and every job tells the engine so (`OPS_LEDGER_FROM_APP`). The build and the check
+  therefore no longer warn that "the decisions on the submissions were not read"; that warning stays for a build run on a PC without the app (1.7.1).
 * **The country workbooks of earlier days are removed** from `submissions/feedback_by_country` at the end of a job (the PC keeps them in `_previous`).
 * **A file a job has written but not yet sent is never overwritten** by reading the folder again: the publish writes the published flag
   (`state.json`, the run's `manifest.json`) and the job sends it when it ends (the autopilot sends it right after the publish).
