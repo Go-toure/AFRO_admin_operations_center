@@ -829,7 +829,7 @@ def server(input, output, session):
     async def lv_task(spec):
         def work():
             df, label = explore.load_frame(get_ws(), spec)
-            return {"slim": livedata.slim(df), "label": label, "spec": spec, "at": time.strftime("%Y-%m-%d %H:%M")}
+            return {"slim": livedata.slim(df), "label": label, "spec": spec, "at": time.strftime("%Y-%m-%d %H:%M"), "columns": list(df.columns)}
         return await asyncio.to_thread(work)
 
     @reactive.effect
@@ -859,6 +859,7 @@ def server(input, output, session):
         ui.update_selectize("lv_vaccine", choices=livedata.choices(sl, "Vaccine_type"), selected=[])
         ui.update_selectize("lv_round", choices=livedata.choices(sl, "Round_Add"), selected=[])
         ui.update_select("lv_year", choices=["All"] + livedata.year_choices(sl), selected="All")
+        ui.update_selectize("lv_colpick", choices=d.get("columns", []), selected=[])
 
     @reactive.effect
     def _lv_province():
@@ -1113,20 +1114,128 @@ def server(input, output, session):
         else:
             yield t.to_csv(index=False).encode("utf-8-sig")
 
-    def lv_whole():
-        """Every record of the loaded source, every column (no filter)."""
+    # ---- the Live file: every record and column of the loaded source, paged on the server
+    lv_q = reactive.value("")
+    MAIN_COLS = ["Country", "Province", "District", "Admin_3", "Response", "Round_Add", "Vaccine_type", "SIA_date", "Year",
+                 "PopPolio", "TotalNbrVaccPolio", "CVPolio", "geo_code", "geo_match"]
+    SEARCH_COLS = ("Country", "Province", "District", "Response", "Vaccine_type", "Round_Add")
+
+    lv_auto = {"done": False}
+
+    @reactive.effect
+    def _lv_autoload():
+        """The first time the tab is opened the live file is read, so it is there to look at without a click."""
+        try:
+            tab = input.tabs()
+        except Exception:
+            return
+        if tab != "Live data" or user() is None:
+            return
+        with reactive.isolate():
+            if lv() is not None or lv_auto["done"] or JM.busy():
+                return
+            lv_auto["done"] = True
+            ui.notification_show("Reading the live file (the first time takes about a minute) ...", duration=8)
+            lv_task(input.lv_source())
+
+    @reactive.effect
+    @reactive.event(input.lv_q_go)
+    def _lv_q_go():
+        lv_q.set(input.lv_qtext() or "")
+
+    @reactive.effect
+    @reactive.event(input.lv_q_clear)
+    def _lv_q_clear():
+        lv_q.set("")
+        ui.update_text("lv_qtext", value="")
+
+    @reactive.effect
+    @reactive.event(lv_q, input.lv_psize, input.lv_cols, input.lv_colpick, lv)
+    def _lv_page_one():
+        ui.update_numeric("lv_page", value=1)
+
+    @reactive.calc
+    def lv_vidx():
+        """The row labels of the loaded table that match the search (all of them without a search)."""
+        d = lv()
+        if not d:
+            return None
+        df, _ = explore.load_frame(get_ws(), d["spec"])
+        q = (lv_q() or "").strip()
+        if not q:
+            return df.index
+        m = pd.Series(False, index=df.index)
+        for c in SEARCH_COLS:
+            if c in df.columns:
+                m |= df[c].str.contains(q, case=False, regex=False, na=False)
+        return df.index[m]
+
+    def lv_pages():
+        idx = lv_vidx()
+        size = int(input.lv_psize() or 250)
+        n = len(idx)
+        pages = max(1, -(-n // size))
+        try:
+            page = int(input.lv_page() or 1)
+        except (TypeError, ValueError):
+            page = 1
+        return idx, size, pages, min(max(page, 1), pages)
+
+    @reactive.effect
+    @reactive.event(input.lv_prev)
+    def _lv_prev():
+        _, _, _, page = lv_pages()
+        ui.update_numeric("lv_page", value=max(1, page - 1))
+
+    @reactive.effect
+    @reactive.event(input.lv_next)
+    def _lv_next():
+        _, _, pages, page = lv_pages()
+        ui.update_numeric("lv_page", value=min(pages, page + 1))
+
+    @render.ui
+    def lv_v_info():
+        if lv() is None:
+            return ui.p("Reading the live file ... (the first time takes about a minute; or click 'Load / reload the data').", class_="note", style="margin-top:34px;")
+        idx, size, pages, page = lv_pages()
+        n = len(idx)
+        a, b = (page - 1) * size + 1, min(page * size, n)
+        q = (lv_q() or "").strip()
+        return ui.p("Rows %s to %s of %s%s.  Page %d of %d." % (livedata.fmt_int(a if n else 0), livedata.fmt_int(b), livedata.fmt_int(n),
+                                                              (" matching '%s'" % q) if q else " in the file", page, pages), class_="note", style="margin-top:34px;")
+
+    @render.data_frame
+    def lv_v_grid():
+        d = lv()
+        if not d:
+            return render.DataGrid(pd.DataFrame({"": ["The live file is not loaded yet."]}), width="100%")
+        idx, size, pages, page = lv_pages()
+        sel_ = idx[(page - 1) * size: page * size]
+        df, _ = explore.load_frame(get_ws(), d["spec"])
+        pick = [c for c in (input.lv_colpick() or ()) if c in df.columns]
+        if pick:
+            cols = pick
+        elif input.lv_cols() == "all":
+            cols = list(df.columns)
+        else:
+            cols = [c for c in MAIN_COLS if c in df.columns]
+        t = df.loc[sel_, cols].copy()
+        t.insert(0, "Excel_row", (t.index + 2).astype(str))
+        return render.DataGrid(t, height="560px", width="100%")
+
+    def lv_view_full():
         df, _ = explore.load_frame(get_ws(), lv()["spec"])
-        full = df.copy()
+        full = df.loc[lv_vidx()].copy()
         full.insert(0, "Excel_row", full.index + 2)
         return full
 
-    @render.download(filename=lambda: "Live_data_whole_file_%s.csv" % time.strftime("%Y%m%d"))
-    def lv_dd_all_csv():
-        yield livedata.records_csv(lv_whole())
+    @render.download(filename=lambda: "Live_file_%s.csv" % time.strftime("%Y%m%d"))
+    def lv_v_csv():
+        yield livedata.records_csv(lv_view_full())
 
-    @render.download(filename=lambda: "Live_data_whole_file_%s.xlsx" % time.strftime("%Y%m%d"))
-    def lv_dd_all_xlsx():
-        yield livedata.records_xlsx(lv_whole())
+    @render.download(filename=lambda: "Live_file_%s.xlsx" % time.strftime("%Y%m%d"))
+    def lv_v_xlsx():
+        yield livedata.records_xlsx(lv_view_full())
 
     # ---------------------------------------------------------------- overview
     @render.ui
@@ -1555,32 +1664,65 @@ def server(input, output, session):
                                                     ui.input_action_button("w_close", "Close this round", class_="btn-outline-danger")),
                                  id="p_more", open=False, class_="mt-3")),
                 ui.nav_panel("Live data",
-                             ui.p("Look at the live file: filter it, see it in charts and download the records. The data are read from the newest backup of the live file "
-                                  "(or another source); nothing is changed.", class_="note"),
+                             ui.p("The live file (the newest backup, or another source): see every record and column, drill down, filter, chart and download. "
+                                  "Nothing is changed.", class_="note"),
                              ui.layout_columns(
                                  ui.input_select("lv_source", "Source", choices={"live": "live file (newest backup)"}, width="100%"),
-                                 ui.div(ui.input_action_button("lv_load", "Load the data", class_="btn-who"), style="margin-top:32px;"),
+                                 ui.div(ui.input_action_button("lv_load", "Load / reload the data", class_="btn-who"), style="margin-top:32px;"),
                                  ui.output_ui("lv_status"),
-                                 col_widths=[4, 2, 6]),
-                             ui.layout_columns(
-                                 ui.input_selectize("lv_country", "Country", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
-                                 ui.input_selectize("lv_province", "Province", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
-                                 ui.input_selectize("lv_district", "District", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
-                                 col_widths=[4, 4, 4]),
-                             ui.layout_columns(
-                                 ui.input_selectize("lv_response", "Response (campaign)", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
-                                 ui.input_selectize("lv_vaccine", "Vaccine", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
-                                 ui.input_selectize("lv_round", "Round", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
-                                 col_widths=[5, 4, 3]),
-                             ui.layout_columns(
-                                 ui.input_select("lv_year", "Year of the start date", choices=["All"], width="100%"),
-                                 ui.input_select("lv_month", "Month", choices=["All"] + MONTHS, width="100%"),
-                                 ui.input_numeric("lv_last", "Last X months (0 = all)", 0, min=0, max=240, width="100%"),
-                                 ui.div(ui.input_action_button("lv_reset", "Clear the filters", class_="btn-outline-secondary"), style="margin-top:32px;"),
-                                 col_widths=[3, 3, 3, 3]),
-                             ui.output_ui("lv_tiles"),
+                                 col_widths=[4, 3, 5]),
                              ui.navset_pill(
-                                 ui.nav_panel("Charts",
+                                 ui.nav_panel("Live file",
+                                              ui.p("The whole file with every column: scroll down and sideways, go to the next rows with the page buttons, find a place or a "
+                                                   "campaign with the search.", class_="note"),
+                                              ui.layout_columns(
+                                                  ui.input_text("lv_qtext", "Search (country, province, district, response, vaccine, round)", width="100%"),
+                                                  ui.div(ui.input_action_button("lv_q_go", "Search", class_="btn-who"),
+                                                         ui.input_action_button("lv_q_clear", "Clear", class_="btn-outline-secondary", style="margin-left:8px;"),
+                                                         style="margin-top:32px;"),
+                                                  ui.input_select("lv_cols", "Columns", choices={"main": "Main columns", "all": "All columns"}, width="100%"),
+                                                  ui.input_select("lv_psize", "Rows per page", choices={"100": "100", "250": "250", "500": "500"}, selected="250", width="100%"),
+                                                  col_widths=[5, 3, 2, 2]),
+                                              ui.input_selectize("lv_colpick", "Or choose the columns to show (empty: the choice above)", choices=[], multiple=True,
+                                                                 width="100%", options={"placeholder": "Main or all columns"}),
+                                              ui.layout_columns(
+                                                  ui.div(ui.input_action_button("lv_prev", "\u2039 Previous", class_="btn-outline-secondary"), style="margin-top:32px;"),
+                                                  ui.input_numeric("lv_page", "Page", 1, min=1, width="100%"),
+                                                  ui.div(ui.input_action_button("lv_next", "Next \u203a", class_="btn-outline-secondary"), style="margin-top:32px;"),
+                                                  ui.output_ui("lv_v_info"),
+                                                  col_widths=[2, 2, 2, 6]),
+                                              ui.output_data_frame("lv_v_grid"),
+                                              ui.div(ui.download_button("lv_v_csv", "Download the whole file or the search result (csv)", class_="btn-outline-secondary"),
+                                                     ui.download_button("lv_v_xlsx", "Download the whole file or the search result (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
+                                                     ui.span("  every column; the xlsx of the whole file takes a minute or two", class_="note", style="margin-left:8px;"),
+                                                     style="margin:10px 0;")),
+                                 ui.nav_panel("Drill-down",
+                                              ui.p("The whole live file, whatever the filters say: click a country, then a province, then a district to see its records.", class_="note"),
+                                              ui.output_ui("lv_dd_path"),
+                                              ui.div(ui.input_action_button("lv_dd_back", "Back one level", class_="btn-outline-secondary"),
+                                                     ui.input_action_button("lv_dd_top", "Start again", class_="btn-outline-secondary", style="margin-left:8px;"),
+                                                     ui.download_button("lv_dd_dl", "Download this table (csv)", class_="btn-outline-secondary", style="margin-left:8px;"),
+                                                     style="margin:6px 0 10px;"),
+                                              ui.output_data_frame("lv_dd_table")),
+                                 ui.nav_panel("Filters & charts",
+                                              ui.p("These filters apply to the tiles, the charts and the filtered records below; the Live file and the Drill-down always show the whole file.", class_="note"),
+                                              ui.layout_columns(
+                                                  ui.input_selectize("lv_country", "Country", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
+                                                  ui.input_selectize("lv_province", "Province", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
+                                                  ui.input_selectize("lv_district", "District", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
+                                                  col_widths=[4, 4, 4]),
+                                              ui.layout_columns(
+                                                  ui.input_selectize("lv_response", "Response (campaign)", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
+                                                  ui.input_selectize("lv_vaccine", "Vaccine", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
+                                                  ui.input_selectize("lv_round", "Round", choices=[], multiple=True, width="100%", options={"placeholder": "All"}),
+                                                  col_widths=[5, 4, 3]),
+                                              ui.layout_columns(
+                                                  ui.input_select("lv_year", "Year of the start date", choices=["All"], width="100%"),
+                                                  ui.input_select("lv_month", "Month", choices=["All"] + MONTHS, width="100%"),
+                                                  ui.input_numeric("lv_last", "Last X months (0 = all)", 0, min=0, max=240, width="100%"),
+                                                  ui.div(ui.input_action_button("lv_reset", "Clear the filters", class_="btn-outline-secondary"), style="margin-top:32px;"),
+                                                  col_widths=[3, 3, 3, 3]),
+                                              ui.output_ui("lv_tiles"),
                                               ui.layout_columns(
                                                   ui.input_select("lv_measure", "Measure (country, time and third chart)", choices=livedata.MEASURES, width="100%"),
                                                   ui.input_select("lv_tgrp", "Time: by", choices={"year": "year", "month": "month"}, width="100%"),
@@ -1592,25 +1734,13 @@ def server(input, output, session):
                                               ui.h5("Districts reaching 95% or more"),
                                               ui.p("The share of district-rounds (a district in a campaign round) whose polio coverage, doses given divided by the target "
                                                    "(PopPolio), is 95% or more. A district-round with no target is left out of the share and counted in the table.", class_="note"),
-                                              ui.input_select("lv_covby", "By", choices={"country": "country", "year": "year", "vaccine": "vaccine",
-                                                                                         "response": "response (campaign)", "round": "round"}, width="300px"),
-                                              ui.output_ui("lv_ch_cov"), ui.output_data_frame("lv_cov_table")),
-                                 ui.nav_panel("Drill-down",
-                                              ui.p("The whole live file, whatever the filters above say: click a country, then a province, then a district to see its records.", class_="note"),
-                                              ui.output_ui("lv_dd_path"),
-                                              ui.div(ui.input_action_button("lv_dd_back", "Back one level", class_="btn-outline-secondary"),
-                                                     ui.input_action_button("lv_dd_top", "Start again", class_="btn-outline-secondary", style="margin-left:8px;"),
-                                                     ui.download_button("lv_dd_dl", "Download this table (csv)", class_="btn-outline-secondary", style="margin-left:8px;"),
-                                                     ui.download_button("lv_dd_all_csv", "Download the whole live file (csv)", class_="btn-outline-secondary", style="margin-left:8px;"),
-                                                     ui.download_button("lv_dd_all_xlsx", "Download the whole live file (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
-                                                     ui.span("  the xlsx of the whole file takes a minute or two", class_="note", style="margin-left:8px;"),
-                                                     style="margin:6px 0 10px;"),
-                                              ui.output_data_frame("lv_dd_table")),
-                                 ui.nav_panel("Records",
+                                              ui.input_select("lv_covby", "By", choices={"country": "country", "year": "year", "vaccine": "vaccine", "response": "response (campaign)", "round": "round"}, width="300px"),
+                                              ui.output_ui("lv_ch_cov"), ui.output_data_frame("lv_cov_table"),
+                                              ui.h5("Filtered records", style="margin-top:14px;"),
                                               ui.output_ui("lv_count"),
-                                              ui.div(ui.download_button("lv_dl_csv", "Download the records (csv)", class_="btn-outline-secondary"),
-                                                     ui.download_button("lv_dl_xlsx", "Download the records (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
-                                                     ui.span("  every column of the live file; the xlsx of the whole file takes a minute or two", class_="note", style="margin-left:8px;"),
+                                              ui.div(ui.download_button("lv_dl_csv", "Download the filtered records (csv)", class_="btn-outline-secondary"),
+                                                     ui.download_button("lv_dl_xlsx", "Download the filtered records (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
+                                                     ui.span("  every column of the live file", class_="note", style="margin-left:8px;"),
                                                      style="margin:6px 0 10px;"),
                                               ui.output_data_frame("lv_table")),
                                  id="tabs_live")),
