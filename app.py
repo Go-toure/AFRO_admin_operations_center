@@ -1404,17 +1404,18 @@ def server(input, output, session):
         )
 
     def held_card(d):
-        """Why records are held back, in plain words, from the last inspection."""
-        if not d.get("held_reasons"):
+        """Why records are held back, in plain words, from the last inspection (a plain table: it is small and needs no separate output)."""
+        h = d.get("held_reasons") or []
+        if not h:
             return ui.div()
+        table = ui.tags.table(
+            ui.tags.thead(ui.tags.tr(*[ui.tags.th(c) for c in ("Reason", "Records", "Countries")])),
+            ui.tags.tbody(*[ui.tags.tr(ui.tags.td(r["Reason"]), ui.tags.td(str(r["Records"])), ui.tags.td(r["Countries"])) for r in h]),
+            class_="table table-sm", style="width:100%;")
         return ui.div(ui.h5("Records held back: why"),
                       ui.p("A record is held back when it looks new but should not go into the live file as it is. Nothing is lost: each one is listed with its "
                            "reason in the report and in the feedback to the country, so it can be corrected or confirmed and sent again.", class_="note"),
-                      ui.output_data_frame("subs_held"), class_="stepcard", style="margin-top:14px;")
-
-    @render.data_frame
-    def subs_held():
-        return render.DataGrid(pd.DataFrame((subs() or {}).get("held_reasons", []), columns=["Reason", "Records", "Countries"]), height="auto", width="100%")
+                      table, class_="stepcard", style="margin-top:14px;")
 
     def news_card(d):
         """What is new in the folder: the files that arrived since a chosen inspection, by country, with their records."""
