@@ -1356,6 +1356,7 @@ def server(input, output, session):
             class_="stepcard") if op else ui.div(ui.p("Only operators accept or reject a file.", class_="note"))
         return ui.div(
             ui.layout_columns(*tiles, col_widths=[4, 4, 4, 4, 4, 4]),
+            news_card(d),
             ui.div(ui.h5("1  Inspect"),
                    ui.p("Reads every file of the submissions folder (the folder itself is never changed), says whether it is in the template "
                         "format or which of its columns could be mapped with certainty, checks every record and value against what the live file "
@@ -1372,6 +1373,60 @@ def server(input, output, session):
             ui.p("The records of the accepted files are added by the next Build (or the whole cycle); the Check step shows how many. "
                  "Files stay where they are and a ledger in the SharePoint folder of the app keeps every decision.", class_="note"),
         )
+
+    def news_card(d):
+        """What is new in the folder: the files that arrived since a chosen inspection, by country, with their records."""
+        arr = d.get("arrivals", [])
+        batches = sorted({a["First seen"] for a in arr if a["First seen"]}, reverse=True)
+        if not batches:
+            return ui.div()
+
+        def label(b):
+            n = [a for a in arr if a["First seen"] >= b]
+            cs = sorted({a["Country"] for a in n})
+            return "%s  -  %d file(s): %s" % (b, len(n), ", ".join(cs[:4]) + (" ..." if len(cs) > 4 else ""))
+        waiting = d.get("not_inspected", [])
+        return ui.div(
+            ui.h5("What is new"),
+            ui.p("Last inspection: %s. %s" % (d.get("last_inspected") or "-",
+                 ("%d file(s) are in the folder and were not read yet (list at the bottom): inspect again." % len(waiting)) if waiting else
+                 "Every file of the folder has been read."), class_="note"),
+            ui.input_select("s_since", "Files that arrived since", choices={b: label(b) for b in batches}, selected=batches[0], width="100%"),
+            ui.p("'Arrived' is the inspection that first saw the file; 'In folder (modified)' is the date of the file on SharePoint. "
+                 "A changed version is a file of the same name that came back with other content.", class_="note"),
+            ui.output_data_frame("subs_news_country"),
+            ui.div(style="height:8px;"),
+            ui.output_data_frame("subs_news_files"),
+            class_="stepcard", style="margin-top:14px;")
+
+    def _since_rows():
+        d = subs() or {}
+        try:
+            b = input.s_since()
+        except Exception:
+            b = None
+        return [a for a in d.get("arrivals", []) if b and a["First seen"] >= b]
+
+    @render.data_frame
+    def subs_news_country():
+        rows = _since_rows()
+        cols = ["Country", "Files", "Not admin data", "New records", "Clean new", "Held back"]
+        if not rows:
+            return render.DataGrid(pd.DataFrame(columns=cols), height="auto", width="100%")
+        df = pd.DataFrame(rows)
+        for c in ("New", "Clean new", "Held back"):
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
+        df["blocked"] = (df["Status"] == "blocked").astype(int)
+        g = df.groupby("Country").agg(Files=("File", "count"), blocked=("blocked", "sum"), New=("New", "sum"), Clean=("Clean new", "sum"),
+                                      Held=("Held back", "sum")).reset_index()
+        g.columns = cols
+        return render.DataGrid(g.sort_values(["New records", "Files"], ascending=False), height="auto", width="100%")
+
+    @render.data_frame
+    def subs_news_files():
+        cols = ["First seen", "Country", "File", "Status", "In folder (modified)", "Version", "Records read", "New", "Clean new", "Held back"]
+        rows = _since_rows()
+        return render.DataGrid(pd.DataFrame([{c: r[c] for c in cols} for r in rows], columns=cols), height="auto", width="100%")
 
     def feedback_card(d):
         """Downloads written by the last inspection: the summary, the pending admin data, and what each country has to correct or send."""

@@ -161,6 +161,9 @@ send. The **Submissions** tab runs four things, all with the engine's `submissio
    record with the live file (new / already there / same names but other figures / several units) and runs the quality checks.
    The result is `Submissions_report.xlsx`, the prepared records (`prepared/`) and the `ledger.json`, all kept in the `submissions/`
    folder of the AdminOps store.
+   The **What is new** box at the top of the tab lists the files that arrived since an inspection you choose (the latest arrival by default), by
+   country and file, with the date of the file on SharePoint, a mark for a changed version of a known file, and the new / clean / held-back records
+   they bring. Files inside a zip are counted under their zip; a zip whose files were read under another path is not shown as unread.
 2. **Accept / Reject**: an operator decides per file; a blocked file cannot be accepted. The decision, who and the note are in the ledger.
    Four automatic rules (setting `submissions_auto`, on by default) take what is safe without a decision: harmless findings only;
    findings the lookup confirms; the same findings as a file a person accepted before; and the clean records of any file that is

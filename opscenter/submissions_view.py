@@ -1,4 +1,6 @@
 """What the Submissions tab shows: the files of the countries, what the last inspection found, and the operator's decisions."""
+import re
+
 import pandas as pd
 
 from . import config
@@ -19,6 +21,35 @@ def list_folder(sub):
                 out[r] = {"size": c["size"], "modified": (c["modified"] or "")[:16].replace("T", " ")}
     rec("", "")
     return out
+
+
+DATA_EXT = (".xlsx", ".xlsm", ".xls", ".xlsb", ".csv")
+
+
+def _container(path):
+    """The file of the folder a ledger path belongs to: a file inside a .zip is listed as '<zip>/<file>'."""
+    i = path.lower().find(".zip/")
+    return path[:i + 4] if i >= 0 else path
+
+
+def _zip_covered(ws, path, known_names):
+    """A .zip of the folder with no ledger entry under its own name: True when every data file inside it was read under another path
+    (a second copy of the same zip), so it is not new."""
+    try:
+        import zipfile
+        with zipfile.ZipFile(ws.workspace / "submissions_in" / path) as z:
+            names = [n.rsplit("/", 1)[-1] for n in z.namelist() if n.lower().endswith(DATA_EXT) and not n.endswith("/")]
+    except Exception:
+        return False
+    return bool(names) and all(n in known_names for n in names)
+
+
+def _country_of(e, path):
+    c = (e.get("countries") or e.get("country_folder") or "").strip()
+    if c:
+        return c
+    first = path.split("/", 1)[0]
+    return re.sub(r"\s*admin data.*$", "", first, flags=re.I).strip() or first
 
 
 def _auto_names(ws):
@@ -68,11 +99,24 @@ def load(store, ws):
                      "Possible duplicates": e.get("possible_dup", ""), "Also in another file": e.get("overlap", ""),
                      "Clean new": e.get("clean_new", ""), "Held back": e.get("held_new", ""),
                      "Errors": e.get("qc_errors", ""), "Warnings": e.get("qc_warnings", ""), "Left out": e.get("excluded", ""),
-                     "Inspected": e.get("last_inspected", ""), "Why": e.get("why", ""), "Note": e.get("note", "")})
-    new_files = [{"File": p, "Modified": f["modified"], "Size KB": round(f["size"] / 1024)} for p, f in sorted(folder.items()) if p not in inspected
-                 and not any(r["File"] == p for r in rows)]
+                     "Inspected": e.get("last_inspected", ""), "Why": e.get("why", ""), "Note": e.get("note", ""),
+                     "First seen": e.get("first_seen", ""), "Country": _country_of(e, path),
+                     "In folder (modified)": (folder.get(_container(path)) or {}).get("modified", ""),
+                     "Version": "changed version" if any(x is not e and (x.get("path") or x.get("name")) == path and x.get("first_seen", "") < e.get("first_seen", "")
+                                                          for x in led.get("files", {}).values()) else ""})
+    in_ledger = {r["File"] for r in rows}
+    containers = {_container(p) for p in in_ledger if ".zip/" in p.lower()}
+    known_names = {p.rsplit("/", 1)[-1] for p in in_ledger}
+    new_files = [{"Country": _country_of({}, p), "File": p, "Modified": f["modified"], "Size KB": round(f["size"] / 1024)}
+                 for p, f in sorted(folder.items())
+                 if p not in inspected and p not in in_ledger and p not in containers
+                 and not (p.lower().endswith(".zip") and _zip_covered(ws, p, known_names))]
+    arrivals = sorted(({k: r[k] for k in ("First seen", "Country", "File", "Status", "In folder (modified)", "Version", "Layout", "Records read", "New",
+                                        "Clean new", "Held back", "Why")} for r in rows),
+                      key=lambda a: (a["First seen"], a["Country"], a["File"]), reverse=True)
+    last_inspected = max((r["Inspected"] for r in rows if r["Inspected"]), default="")
     changed = changed_files
-    return {"configured": True, "rows": rows, "not_inspected": new_files, "changed": changed, "in_folder": len(folder),
+    return {"configured": True, "rows": rows, "not_inspected": new_files, "arrivals": arrivals, "last_inspected": last_inspected, "changed": changed, "in_folder": len(folder),
             "accepted": sum(1 for r in rows if r["Decision"] == "accepted"),
             "by_rules": sum(1 for r in rows if r["Decision"] == "taken by rules"),
             "clean_new": sum(int(r["Clean new"] or 0) for r in rows if r["Status"] != "blocked"),
