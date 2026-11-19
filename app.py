@@ -1149,11 +1149,6 @@ def server(input, output, session):
         lv_q.set("")
         ui.update_text("lv_qtext", value="")
 
-    @reactive.effect
-    @reactive.event(lv_q, input.lv_psize, input.lv_cols, input.lv_colpick, lv)
-    def _lv_page_one():
-        ui.update_numeric("lv_page", value=1)
-
     @reactive.calc
     def lv_vidx():
         """The row labels of the loaded table that match the search (all of them without a search)."""
@@ -1170,58 +1165,45 @@ def server(input, output, session):
                 m |= df[c].str.contains(q, case=False, regex=False, na=False)
         return df.index[m]
 
-    def lv_pages():
-        idx = lv_vidx()
-        size = int(input.lv_psize() or 250)
-        n = len(idx)
-        pages = max(1, -(-n // size))
-        try:
-            page = int(input.lv_page() or 1)
-        except (TypeError, ValueError):
-            page = 1
-        return idx, size, pages, min(max(page, 1), pages)
+    CELL_BUDGET = 3000000        # cells sent to the browser at once (rows x columns): the main columns of the whole file fit, all 166 columns do not
 
-    @reactive.effect
-    @reactive.event(input.lv_prev)
-    def _lv_prev():
-        _, _, _, page = lv_pages()
-        ui.update_numeric("lv_page", value=max(1, page - 1))
-
-    @reactive.effect
-    @reactive.event(input.lv_next)
-    def _lv_next():
-        _, _, pages, page = lv_pages()
-        ui.update_numeric("lv_page", value=min(pages, page + 1))
+    def lv_columns(df):
+        pick = [c for c in (input.lv_colpick() or ()) if c in df.columns]
+        if pick:
+            return pick
+        if input.lv_cols() == "all":
+            return list(df.columns)
+        return [c for c in MAIN_COLS if c in df.columns]
 
     @render.ui
     def lv_v_info():
-        if lv() is None:
-            return ui.p("Reading the live file ... (the first time takes about a minute; or click 'Load / reload the data').", class_="note", style="margin-top:34px;")
-        idx, size, pages, page = lv_pages()
+        d = lv()
+        if d is None:
+            return ui.p("Reading the live file ... (the first time takes about a minute; or click 'Load / reload the data').", class_="note")
+        idx = lv_vidx()
         n = len(idx)
-        a, b = (page - 1) * size + 1, min(page * size, n)
+        ncols = len(lv_columns(pd.DataFrame(columns=d["columns"]))) + 1
+        shown = min(n, max(1, CELL_BUDGET // ncols))
         q = (lv_q() or "").strip()
-        return ui.p("Rows %s to %s of %s%s.  Page %d of %d." % (livedata.fmt_int(a if n else 0), livedata.fmt_int(b), livedata.fmt_int(n),
-                                                              (" matching '%s'" % q) if q else " in the file", page, pages), class_="note", style="margin-top:34px;")
+        msg = "%s rows%s, %d columns." % (livedata.fmt_int(n), (" match '%s'" % q) if q else " in the file", ncols)
+        if shown < n:
+            msg += " The first %s are in the table because of the number of columns; choose fewer columns or search to see the rest here. The downloads have everything." % livedata.fmt_int(shown)
+        return ui.p(msg, class_="note")
 
     @render.data_frame
     def lv_v_grid():
         d = lv()
         if not d:
             return render.DataGrid(pd.DataFrame({"": ["The live file is not loaded yet."]}), width="100%")
-        idx, size, pages, page = lv_pages()
-        sel_ = idx[(page - 1) * size: page * size]
         df, _ = explore.load_frame(get_ws(), d["spec"])
-        pick = [c for c in (input.lv_colpick() or ()) if c in df.columns]
-        if pick:
-            cols = pick
-        elif input.lv_cols() == "all":
-            cols = list(df.columns)
-        else:
-            cols = [c for c in MAIN_COLS if c in df.columns]
+        cols = lv_columns(df)
+        sel_ = lv_vidx()[: max(1, CELL_BUDGET // (len(cols) + 1))]
         t = df.loc[sel_, cols].copy()
+        for c in ("SIA_date", "Date_Report", "DateOfOnset"):
+            if c in t.columns:
+                t[c] = t[c].str.replace(r" 00:00:00$", "", regex=True)
         t.insert(0, "Excel_row", (t.index + 2).astype(str))
-        return render.DataGrid(t, height="560px", width="100%")
+        return render.DataGrid(t, height="620px", width="100%")
 
     def lv_view_full():
         df, _ = explore.load_frame(get_ws(), lv()["spec"])
@@ -1673,24 +1655,18 @@ def server(input, output, session):
                                  col_widths=[4, 3, 5]),
                              ui.navset_pill(
                                  ui.nav_panel("Live file",
-                                              ui.p("The whole file with every column: scroll down and sideways, go to the next rows with the page buttons, find a place or a "
-                                                   "campaign with the search.", class_="note"),
+                                              ui.p("The whole file: scroll down and sideways (main columns, or all of them, or the ones you choose). The search finds a place or a "
+                                                   "campaign; the downloads have every row and every column.", class_="note"),
                                               ui.layout_columns(
                                                   ui.input_text("lv_qtext", "Search (country, province, district, response, vaccine, round)", width="100%"),
                                                   ui.div(ui.input_action_button("lv_q_go", "Search", class_="btn-who"),
                                                          ui.input_action_button("lv_q_clear", "Clear", class_="btn-outline-secondary", style="margin-left:8px;"),
                                                          style="margin-top:32px;"),
                                                   ui.input_select("lv_cols", "Columns", choices={"main": "Main columns", "all": "All columns"}, width="100%"),
-                                                  ui.input_select("lv_psize", "Rows per page", choices={"100": "100", "250": "250", "500": "500"}, selected="250", width="100%"),
-                                                  col_widths=[5, 3, 2, 2]),
+                                                  col_widths=[6, 3, 3]),
                                               ui.input_selectize("lv_colpick", "Or choose the columns to show (empty: the choice above)", choices=[], multiple=True,
                                                                  width="100%", options={"placeholder": "Main or all columns"}),
-                                              ui.layout_columns(
-                                                  ui.div(ui.input_action_button("lv_prev", "\u2039 Previous", class_="btn-outline-secondary"), style="margin-top:32px;"),
-                                                  ui.input_numeric("lv_page", "Page", 1, min=1, width="100%"),
-                                                  ui.div(ui.input_action_button("lv_next", "Next \u203a", class_="btn-outline-secondary"), style="margin-top:32px;"),
-                                                  ui.output_ui("lv_v_info"),
-                                                  col_widths=[2, 2, 2, 6]),
+                                              ui.output_ui("lv_v_info"),
                                               ui.output_data_frame("lv_v_grid"),
                                               ui.div(ui.download_button("lv_v_csv", "Download the whole file or the search result (csv)", class_="btn-outline-secondary"),
                                                      ui.download_button("lv_v_xlsx", "Download the whole file or the search result (xlsx)", class_="btn-outline-secondary", style="margin-left:8px;"),
