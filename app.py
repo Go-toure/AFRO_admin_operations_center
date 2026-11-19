@@ -546,7 +546,7 @@ def server(input, output, session):
         df = (d or {}).get(name)
         if df is None or len(df) == 0:
             return render.DataGrid(pd.DataFrame({"": ["nothing"]}), width="100%")
-        return render.DataGrid(df.head(cap).astype(str), height="auto", width="100%")
+        return render.DataGrid(df.head(cap).astype(str), height="300px", width="100%")
 
     @render.data_frame
     def w_issues():
@@ -774,11 +774,13 @@ def server(input, output, session):
             scope_card, wire_card,
             ui.h5("3  What the last inspection and proposal found", style="margin-top:14px;"),
             ui.p("Read from the last 'Inspect the submissions' and 'Propose the lookup fixes'. Run them again after a scope refresh.", class_="note"),
-            ui.h6("Lookup issues (rounds in the live file the lookup cannot place)"), ui.output_data_frame("w_issues"),
-            ui.h6("Accepted by the GPEI round window", style="margin-top:12px;"), ui.output_data_frame("w_accepted"),
-            ui.h6("Proposed: live campaign renamed to the lookup name", style="margin-top:12px;"), ui.output_data_frame("w_pcorr"),
-            ui.h6("Proposed: changes to the lookup", style="margin-top:12px;"), ui.output_data_frame("w_pchg"),
-            ui.h6("Not proposed (needs a person)", style="margin-top:12px;"), ui.output_data_frame("w_pskip"),
+            ui.accordion(
+                ui.accordion_panel("Lookup issues (rounds in the live file the lookup cannot place)", ui.output_data_frame("w_issues")),
+                ui.accordion_panel("Accepted by the GPEI round window", ui.output_data_frame("w_accepted")),
+                ui.accordion_panel("Proposed: live campaign renamed to the lookup name", ui.output_data_frame("w_pcorr")),
+                ui.accordion_panel("Proposed: changes to the lookup", ui.output_data_frame("w_pchg")),
+                ui.accordion_panel("Not proposed (needs a person)", ui.output_data_frame("w_pskip")),
+                id="w_more", open=False),
             ui.p("The rounds with no admin data received are in the tab Pending admin data.", class_="note", style="margin-top:12px;"))
 
     # ---------------------------------------------------------------- explore
@@ -1258,12 +1260,12 @@ def server(input, output, session):
     @render.data_frame
     def runs_table():
         d = ov()
-        return render.DataGrid(pd.DataFrame(d["runs"] if d else []), height="auto")
+        return render.DataGrid(pd.DataFrame(d["runs"] if d else []), height="320px")
 
     @render.data_frame
     def backups_table():
         d = ov()
-        return render.DataGrid(pd.DataFrame(d["backups"] if d else []), height="auto")
+        return render.DataGrid(pd.DataFrame(d["backups"] if d else []), height="320px")
 
     # ---------------------------------------------------------------- cycle
     @render.ui
@@ -1370,10 +1372,15 @@ def server(input, output, session):
             ui.input_action_button("s_accept", "Accept", class_="btn-who"),
             ui.input_action_button("s_reject", "Reject", class_="btn-outline-danger", style="margin-left:8px;"),
             class_="stepcard") if op else ui.div(ui.p("Only operators accept or reject a file.", class_="note"))
+        with reactive.isolate():
+            try:
+                sel = input.subs_sub()
+            except Exception:
+                sel = None
+        panes = ["What is new", "Held back", "Files", "Decide", "Feedback"]
+        fb = feedback_card(d)
         return ui.div(
             ui.layout_columns(*tiles, col_widths=[4] * len(tiles)),
-            held_card(d),
-            news_card(d),
             ui.div(ui.h5("1  Inspect"),
                    ui.p("Reads every file of the submissions folder (the folder itself is never changed), says whether it is in the template "
                         "format or which of its columns could be mapped with certainty, checks every record and value against what the live file "
@@ -1381,14 +1388,19 @@ def server(input, output, session):
                         class_="note"),
                    (ui.input_action_button("s_inspect", "Inspect the submissions", class_="btn-who") if op else ui.span("operators only", class_="note")),
                    ui.span(" "), report, class_="stepcard", style="margin-top:14px;"),
-            feedback_card(d),
-            ui.h5("Files"),
-            ui.output_data_frame("subs_table"),
-            (ui.div(ui.h5("In the folder, not inspected yet", style="margin-top:14px;"), ui.output_data_frame("subs_new")) if d["not_inspected"] else ui.div()),
-            ui.div(style="height:10px;"),
-            decide_card,
-            ui.p("The records of the accepted files are added by the next Build (or the whole cycle); the Check step shows how many. "
-                 "Files stay where they are and a ledger in the SharePoint folder of the app keeps every decision.", class_="note"),
+            ui.div(style="height:12px;"),
+            ui.navset_pill(
+                ui.nav_panel("What is new", news_card(d),
+                             (ui.div(ui.h6("In the folder, not read yet", style="margin-top:14px;"), ui.output_data_frame("subs_new")) if d["not_inspected"] else ui.div())),
+                ui.nav_panel("Held back", held_card(d) if d.get("held_reasons") else ui.p("No record is held back.", class_="note")),
+                ui.nav_panel("Files", ui.p("Every file of the folder with what the inspection found. Use the boxes under the column names to filter "
+                                           "(for example Not admin data = LQAS, or Status = blocked).", class_="note"),
+                             ui.output_data_frame("subs_table")),
+                ui.nav_panel("Decide", decide_card,
+                             ui.p("The records of the accepted files are added by the next Build (or the whole cycle); the Check step shows how many. "
+                                  "Files stay where they are and a ledger in the SharePoint folder of the app keeps every decision.", class_="note")),
+                ui.nav_panel("Feedback", fb if fb else ui.p("Nothing written yet: run the inspection.", class_="note")),
+                id="subs_sub", selected=sel if sel in panes else None),
         )
 
     def held_card(d):
@@ -1450,13 +1462,13 @@ def server(input, output, session):
         g = df.groupby("Country").agg(Files=("File", "count"), blocked=("blocked", "sum"), New=("New", "sum"), Clean=("Clean new", "sum"),
                                       Held=("Held back", "sum")).reset_index()
         g.columns = cols
-        return render.DataGrid(g.sort_values(["New records", "Files"], ascending=False), height="auto", width="100%")
+        return render.DataGrid(g.sort_values(["New records", "Files"], ascending=False), height="260px", width="100%")
 
     @render.data_frame
     def subs_news_files():
         cols = ["First seen", "Country", "File", "Status", "Not admin data", "In folder (modified)", "Version", "Records read", "New", "Clean new", "Held back"]
         rows = _since_rows()
-        return render.DataGrid(pd.DataFrame([{c: r[c] for c in cols} for r in rows], columns=cols), height="auto", width="100%")
+        return render.DataGrid(pd.DataFrame([{c: r[c] for c in cols} for r in rows], columns=cols), height="360px", width="100%")
 
     def feedback_card(d):
         """Downloads written by the last inspection: the summary, the pending admin data, and what each country has to correct or send."""
@@ -1486,7 +1498,7 @@ def server(input, output, session):
         cols = ["File", "Not admin data", "Layout", "Status", "Decision", "Countries", "Records read", "New", "Clean new", "Held back", "Already there", "Other figures", "Several units",
                 "Possible duplicates", "Also in another file", "Errors", "Warnings", "Left out", "Note"]
         rows = [{c: r[c] for c in cols} for r in (d or {}).get("rows", [])]
-        return render.DataGrid(pd.DataFrame(rows, columns=cols), height="auto", width="100%", filters=True)
+        return render.DataGrid(pd.DataFrame(rows, columns=cols), height="560px", width="100%", filters=True)
 
     @render.ui
     def s_why():
@@ -1504,7 +1516,7 @@ def server(input, output, session):
     @render.data_frame
     def subs_new():
         d = subs()
-        return render.DataGrid(pd.DataFrame((d or {}).get("not_inspected", [])), height="auto")
+        return render.DataGrid(pd.DataFrame((d or {}).get("not_inspected", [])), height="260px")
 
     @render.download(filename="Submissions_report.xlsx")
     def s_report():
@@ -1667,7 +1679,7 @@ def server(input, output, session):
     @render.data_frame
     def activity_table():
         d = ov()
-        return render.DataGrid(pd.DataFrame(d["activity"] if d else []), height="auto")
+        return render.DataGrid(pd.DataFrame(d["activity"] if d else []), height="520px")
 
     # ---------------------------------------------------------------- page
     @render.ui
