@@ -67,6 +67,14 @@ or two servers). Operators can build and publish; viewers can only look and down
 * **Close all the "probably the same campaign re-sent" groups at once (1.7.3).** When several files have such a group, the "Group to close" list starts with
   "ALL n FILES - Probably the same campaign re-sent". One click (and one optional note) closes them all, with one entry per file in `held_closed.json`, so each file can
   still be reopened on its own. Only that triage is offered for all files; "Needs a look" and "Figures differ a lot" are closed group by group, after a person has looked.
+* **Integrated campaigns (1.7.4).** A polio-led SIA can carry other interventions (measles-rubella, yellow fever, vitamin A, deworming, IPV, HPV and the others of the
+  template). The inspection recognises them from the **figures** of their blocks (children vaccinated / treated / doses delivered or used above zero), not from the flags, which
+  the countries often leave wrong: the flags follow the figures and `SIA_Integrated` becomes Yes (sheet `Integrated_interventions`). A campaign already in the live file with its
+  polio figures only is **completed, never duplicated**: the empty cells of the integrated blocks are filled from the file (sheet `Integrated_additions`, applied by the build
+  only after a person accepts the file, and only while the live cell still holds the value the inspection saw); polio figures and filled cells are never touched; integrated
+  figures that both have and that differ are listed (`Integrated_differences`) and left alone. The build writes `integrated_data_added_from_submissions_vNN.csv`. Also read now:
+  a campaign written with its round ("...-Round 2"), a round 0 that is only the template's default, `<5Y` as the age group, a number typed in `Admin_3`, and the V2 template's new
+  intervention columns (HPV, onchocerciasis, LF, schistosomiasis, trachoma: known, reported when they hold figures, not in the live file yet).
 * **Home card "What to do next" and `status.json` (1.7.2).** `opscenter/status.py` reads the small files the app keeps and says what is live, what waits and the next
   things to do. The same content is written to `status.json` in the SharePoint folder after every job, for a person, a dashboard or an AI agent.
 * **Feedback tracker per country (1.7.2).** Submissions > Feedback shows, per country, what is open and whether the feedback was sent, answered or needs a reminder
