@@ -1458,6 +1458,10 @@ def server(input, output, session):
             return ui.div()
         op = is_operator()
         ch = {"%s||%s" % (g["File"], g["Triage"]): "%s - %s (%d)" % (g["File"], g["Triage"], g["Records"]) for g in gr if not g["Triage"].startswith("Not sorted")}
+        same = [g for g in gr if g["Triage"] == "Probably the same campaign re-sent"]
+        if len(same) > 1:     # 1.7.3: one click for every file whose records are probably the same campaign sent again
+            ch = dict([("%s||%s" % (heldclose.ALL_FILES, same[0]["Triage"]),
+                        "ALL %d FILES - %s (%d records)" % (len(same), same[0]["Triage"], sum(g["Records"] for g in same)))] + list(ch.items()))
         form = ui.div(
             ui.input_select("hc_group", "Group to close", choices=ch, width="100%"),
             ui.input_text("hc_note", "Note (optional: why these are duplicates)", width="100%"),
@@ -1488,7 +1492,11 @@ def server(input, output, session):
             ui.notification_show("Choose a group first.", type="warning")
             return
         f, t = v.split("||", 1)
-        start("Close held records: %s (%s)" % (f, t), pipelines.make_held_close(f, t, (input.hc_note() or "").strip()))
+        note = (input.hc_note() or "").strip()
+        if f == heldclose.ALL_FILES:
+            start("Close held records: all files (%s)" % t, pipelines.make_held_close_all(t, note))
+        else:
+            start("Close held records: %s (%s)" % (f, t), pipelines.make_held_close(f, t, note))
 
     @reactive.effect
     @reactive.event(input.hc_reopen)

@@ -13,6 +13,7 @@ import pandas as pd
 
 _CACHE = {}
 COLS = ["File", "Country", "Hold_reason", "Triage", "Held_key"]
+ALL_FILES = "__ALL_FILES__"      # choice of the Group to close list: every file of one triage
 
 
 def _report(ws):
@@ -99,6 +100,16 @@ def close_group(ws, file, triage, by, note=""):
     d["closed"].append(e)
     _write(ws, d)
     return e
+
+
+def close_triage(ws, triage, by, note=""):
+    """Close, in one step, every open group of one triage (for example all the 'Probably the same campaign re-sent' groups of all files).
+    One entry per file is kept, so each can be reopened on its own. Returns the list of entries."""
+    h = open_table(ws)
+    files = sorted(set(h[(h["Triage"] == triage) & (h["Held_key"] != "")]["File"]))
+    if not files:
+        raise ValueError("Nothing to close: no sorted held record in the group '%s' (inspect again to sort them)." % triage)
+    return [close_group(ws, f, triage, by, note) for f in files]
 
 
 def reopen(ws, gid):

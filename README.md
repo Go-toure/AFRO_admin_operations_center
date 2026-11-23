@@ -64,6 +64,9 @@ or two servers). Operators can build and publish; viewers can only look and down
   (figures agree)", "same place and campaign, figures far apart" and "look at it". A person closes a group as "duplicate, not added": the decision is kept in
   `submissions/held_closed.json` (SharePoint folder), the records leave the held list and the country feedback at the next inspection, and nothing is dropped
   silently (a closed group can be reopened). The app never closes anything by itself: the figures of the possible duplicates never agree exactly with the live record.
+* **Close all the "probably the same campaign re-sent" groups at once (1.7.3).** When several files have such a group, the "Group to close" list starts with
+  "ALL n FILES - Probably the same campaign re-sent". One click (and one optional note) closes them all, with one entry per file in `held_closed.json`, so each file can
+  still be reopened on its own. Only that triage is offered for all files; "Needs a look" and "Figures differ a lot" are closed group by group, after a person has looked.
 * **Home card "What to do next" and `status.json` (1.7.2).** `opscenter/status.py` reads the small files the app keeps and says what is live, what waits and the next
   things to do. The same content is written to `status.json` in the SharePoint folder after every job, for a person, a dashboard or an AI agent.
 * **Feedback tracker per country (1.7.2).** Submissions > Feedback shows, per country, what is open and whether the feedback was sent, answered or needs a reminder

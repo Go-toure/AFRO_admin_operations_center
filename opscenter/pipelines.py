@@ -410,6 +410,18 @@ def make_held_close(file, triage, note):
     return p
 
 
+def make_held_close_all(triage, note):
+    """Close every group of one triage, in one step (one decision per file, each can be reopened on its own)."""
+    @operator_only
+    def p(ctx):
+        from . import heldclose
+        ctx.ws.pull_submissions()
+        es = heldclose.close_triage(ctx.ws, triage, ctx.user["name"], note)
+        ctx.emit("Closed %d held record(s) of %d file(s) (%s) as duplicate, not added. They stay out of the live file and the next inspection will not hold them." %
+                 (sum(e["n"] for e in es), len(es), triage.lower()))
+    return p
+
+
 def make_held_reopen(gid):
     @operator_only
     def p(ctx):

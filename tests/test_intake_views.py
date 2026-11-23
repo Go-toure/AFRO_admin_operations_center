@@ -190,6 +190,23 @@ class HeldTriageAndClose(unittest.TestCase):
         heldclose.reopen(ws, e["id"])
         self.assertEqual(heldclose.closed_in_report(ws), 0)
 
+    def test_close_all_files_of_one_triage(self):
+        from opscenter import heldclose
+        ws = make_ws([])
+        h = pd.DataFrame({"File": ["f.xlsx"] * 2 + ["g.xlsx"] * 2 + ["h.xlsx"], "Country": ["NIGERIA", "NIGERIA", "CHAD", "CHAD", "CHAD"],
+                          "Hold_reason": ["possible duplicate"] * 5,
+                          "Triage": ["Probably the same campaign re-sent"] * 4 + ["Needs a look"],
+                          "Held_key": ["k1", "k2", "k3", "k4", "k5"]})
+        with pd.ExcelWriter(ws.workspace / "submissions" / "Submissions_report.xlsx") as w:
+            h.to_excel(w, sheet_name="Held_back_records", index=False)
+        es = heldclose.close_triage(ws, "Probably the same campaign re-sent", "T", "re-sent")
+        self.assertEqual(sorted((e["file"], e["n"]) for e in es), [("f.xlsx", 2), ("g.xlsx", 2)])   # one entry per file
+        self.assertEqual({(g["File"], g["Triage"]) for g in heldclose.groups(ws)}, {("h.xlsx", "Needs a look")})   # 'Needs a look' untouched
+        with self.assertRaises(ValueError):
+            heldclose.close_triage(ws, "Probably the same campaign re-sent", "T")
+        heldclose.reopen(ws, es[0]["id"])                                                           # each file reopens on its own
+        self.assertEqual(heldclose.closed_in_report(ws), 2)
+
     def test_engine_triage_and_key(self):
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
         import submissions as sm
