@@ -1,4 +1,4 @@
-"""The lookup is the authority for the round number (author: Gorgui Ba Toure)."""
+"""The lookup is the authority for the Response name, the start date and the round number (author: Gorgui Ba Toure)."""
 import sys
 import unittest
 from pathlib import Path
@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 import add_coadmin_columns as b          # noqa: E402
 import submissions as sm                 # noqa: E402
 
-RESP = "ANG-2026-08-02_nOPV-NID"
+RESP = "ANG-2026-08-02_nOPV_NID"
 
 
 def lookup():
@@ -54,17 +54,50 @@ class RoundTests(unittest.TestCase):
         ws.append(header)
         ws.append(["ANGOLA", RESP, "2026-08-21", "Rnd3", 100])
         ws.append(["ANGOLA", RESP, "2026-10-23", "Rnd4", 200])
-        log = b.align_rounds_to_lookup(ws, header, lookup())
+        log, _ = b.align_rounds_to_lookup(ws, header, lookup())
         self.assertEqual([ws.cell(row=r, column=4).value for r in (2, 3)], ["Rnd1", "Rnd2"])
         self.assertEqual([ws.cell(row=r, column=5).value for r in (2, 3)], [100, 200])
         self.assertEqual(int(log["Records"].sum()), 2)
-        self.assertEqual(len(b.align_rounds_to_lookup(ws, header, lookup())), 0)      # second run: nothing to do
+        self.assertEqual(len(b.align_rounds_to_lookup(ws, header, lookup())[0]), 0)      # second run: nothing to do
+
+    def test_response_follows_the_lookup_spelling(self):
+        df = frame([["ANGOLA", "ANG-2026-08-02_nOPV-NID", "2026-08-21", "Rnd1"], ["ANGOLA", "ang-2026-08-02_nopv_nid.", "2026-10-23", "Rnd2"],
+                    ["ANGOLA", "OTHER", "2026-08-21", "Rnd1"]])
+        new, log = b.lookup_response_names(df, lookup())
+        self.assertEqual(list(new), ["ANG-2026-08-02_nOPV_NID", "ANG-2026-08-02_nOPV_NID", "OTHER"])
+        self.assertEqual(int(log["Records"].sum()), 2)
+
+    def test_date_moves_to_the_planned_start_only_when_safe(self):
+        df = pd.DataFrame({"Country": ["ANGOLA"] * 4, "Response": [RESP] * 4, "SIA_date": ["2026-08-24", "2026-08-24", "2026-09-20", "2026-10-23"],
+                           "Round_Add": ["Rnd1", "Rnd1", "Rnd1", "Rnd2"], "Province": ["A", "B", "C", "A"], "District": ["x", "y", "z", "x"]})
+        new, log, skipped = b.lookup_dates(df, lookup())
+        self.assertEqual(list(new), ["2026-08-21", "2026-08-21", "2026-09-20", "2026-10-23"])     # 3 days from a start: moved; 28 days from any: left
+        self.assertEqual(len(skipped), 1)
+        # records of the same place already on the planned start: not moved (it would make duplicates)
+        df2 = pd.DataFrame({"Country": ["ANGOLA"] * 2, "Response": [RESP] * 2, "SIA_date": ["2026-08-21", "2026-08-24"], "Round_Add": ["Rnd1"] * 2,
+                            "Province": ["A", "A"], "District": ["x", "x"]})
+        new2, _, sk2 = b.lookup_dates(df2, lookup())
+        self.assertEqual(list(new2), ["2026-08-21", "2026-08-24"])
+        self.assertIn("duplicates", sk2[0]["Why"])
+
+    def test_a_clash_left_as_it_is_can_make_another_group_clash(self):
+        # 09-20 is not in the lookup and is Rnd1; 08-21 (Rnd2 -> Rnd1) would clash with it and is left; then 10-23 (Rnd3 -> Rnd2) would clash with 08-21 and is left too
+        df = frame([["ANGOLA", RESP, "2026-09-20", "Rnd1"], ["ANGOLA", RESP, "2026-08-21", "Rnd2"], ["ANGOLA", RESP, "2026-10-23", "Rnd3"]])
+        new, log = b.lookup_round_labels(df, lookup())
+        self.assertEqual(list(new), ["Rnd1", "Rnd2", "Rnd3"])
+        self.assertEqual(len(log), 0)
+
+    def test_a_round_never_ends_on_two_dates_of_one_campaign(self):
+        df = frame([["ANGOLA", RESP, "2026-08-21", "Rnd3"], ["ANGOLA", RESP, "2026-09-20", "Rnd1"]])   # 09-20 is not in the lookup and already is Rnd1
+        new, _ = b.lookup_round_labels(df, lookup())
+        self.assertEqual(list(new), ["Rnd3", "Rnd1"])
 
     def test_submission_takes_the_lookup_round(self):
         ctx = type("C", (), {})()
         ctx.builder, ctx.lookup = b, lookup()
         P = pd.DataFrame({"Country": ["ANGOLA", "ANGOLA"], "Response": [RESP, RESP], "SIA_date": pd.to_datetime(["2026-08-21", "2026-10-23"]),
                           "Round_Add": ["Rnd3", "Rnd2"], "_src_row": [2, 3]})
+        P["Response"] = ["ANG-2026-08-02_nOPV-NID", RESP]
 
         class N:
             rows = []
@@ -73,7 +106,8 @@ class RoundTests(unittest.TestCase):
                 self.rows.append(a)
         out = sm.align_round_to_lookup(P, ctx, N())
         self.assertEqual(list(P["Round_Add"]), ["Rnd1", "Rnd2"])
-        self.assertEqual(len(out), 1)
+        self.assertEqual(P.at[0, "Response"], "ANG-2026-08-02_nOPV_NID")
+        self.assertEqual(len(out), 2)
 
 
 if __name__ == "__main__":

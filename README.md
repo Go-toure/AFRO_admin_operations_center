@@ -67,10 +67,12 @@ or two servers). Operators can build and publish; viewers can only look and down
 * **Close all the "probably the same campaign re-sent" groups at once (1.7.3).** When several files have such a group, the "Group to close" list starts with
   "ALL n FILES - Probably the same campaign re-sent". One click (and one optional note) closes them all, with one entry per file in `held_closed.json`, so each file can
   still be reopened on its own. Only that triage is offered for all files; "Needs a look" and "Figures differ a lot" are closed group by group, after a person has looked.
-* **The lookup is the authority for the round number (1.7.5).** A record whose campaign and start date are one round of the lookup gets the lookup's round, whatever the country wrote
-  (Angola's file says Round Number 3 for ANG-2026-08-02 started 2026-08-21, which is Round 1 in the lookup: it is Rnd1, and the 23 Oct round is Rnd2). The inspection reads the live file with
-  the lookup's numbers; the build relabels the live records of the campaigns the lookup numbers differently (Round_Add only, no figure changes) and lists every change in
-  `round_numbers_aligned_to_lookup.csv`. Records whose campaign or date is not in the lookup keep their label. Switch off with `--no-lookup-rounds`.
+* **The lookup is the authority for the Response, the start date and the round number (1.7.5).** A record whose campaign is one of the lookup is written the way the lookup writes it:
+  the Response with the lookup's name (ANG-2026-08-02_nOPV-NID becomes ANG-2026-08-02_nOPV_NID), the SIA_date moved to the planned start when that start is the only one of the campaign
+  within 14 days and no record of the same place already carries it (Year and SIAMTH follow), and the round with the lookup's number for that campaign and start date (Angola's file says
+  Round Number 3 for the lookup's Round 1: it is Rnd1; the 23 Oct round is Rnd2). The inspection reads the live file this way and the files of the countries too; the build changes the live
+  records (names, dates, rounds only, no figure) and lists every change in `aligned_to_lookup.csv`; what it left (a date too far from any planned start, a move that would make
+  duplicates, a round that would sit on two dates) is in `not_aligned_to_lookup.csv`. Records whose campaign is not in the lookup are not touched. Switch off with `--no-lookup-rounds`.
 * **Integrated campaigns (1.7.4).** A polio-led SIA can carry other interventions (measles-rubella, yellow fever, vitamin A, deworming, IPV, HPV and the others of the
   template). The inspection recognises them from the **figures** of their blocks (children vaccinated / treated / doses delivered or used above zero), not from the flags, which
   the countries often leave wrong: the flags follow the figures and `SIA_Integrated` becomes Yes (sheet `Integrated_interventions`). A campaign already in the live file with its
