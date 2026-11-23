@@ -75,6 +75,10 @@ or two servers). Operators can build and publish; viewers can only look and down
   figures that both have and that differ are listed (`Integrated_differences`) and left alone. The build writes `integrated_data_added_from_submissions_vNN.csv`. Also read now:
   a campaign written with its round ("...-Round 2"), a round 0 that is only the template's default, `<5Y` as the age group, a number typed in `Admin_3`, and the V2 template's new
   intervention columns (HPV, onchocerciasis, LF, schistosomiasis, trachoma: known, reported when they hold figures, not in the live file yet).
+* **The live file takes the V2 template (1.7.4).** At the next build the live file gets the 39 columns of the V2 admin template it did not have: HPV, onchocerciasis, lymphatic
+  filariasis, schistosomiasis and trachoma (flag, target, age group, vaccinated or treated, coverage, doses used, wastage) and the IPV doses by age band (`Total_IPV<=1Y`,
+  `Total_IPV>1Y`). They are placed where the V2 template has them, empty for the earlier records, and the data dictionary (`AFRO_admin_data_dictionary.xlsx`) describes all of them
+  (205 columns). The inspection already reads a submission in the V2 layout with these columns, so no figure is lost on the first acceptance. `--no-template-update` turns it off.
 * **Home card "What to do next" and `status.json` (1.7.2).** `opscenter/status.py` reads the small files the app keeps and says what is live, what waits and the next
   things to do. The same content is written to `status.json` in the SharePoint folder after every job, for a person, a dashboard or an AI agent.
 * **Feedback tracker per country (1.7.2).** Submissions > Feedback shows, per country, what is open and whether the feedback was sent, answered or needs a reminder

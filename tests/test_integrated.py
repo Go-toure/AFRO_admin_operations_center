@@ -76,5 +76,34 @@ class IntegratedTests(unittest.TestCase):
             self.assertEqual(ws.max_row, 3)
 
 
+class TemplateV2Tests(unittest.TestCase):
+    def test_v2_columns_are_placed_where_the_template_has_them(self):
+        base = ["Country", "IntegLLIN", "IntegIPV", "WastRLLIN", "Total_IPV1_0_6wk", "WastRYF", "NbrVacTetanus_1st_Dose", "WastRAlbendazole", "geo_code"]
+        cols = base + [c for c in b.V2_ORDER if c in b.TEMPLATE_V2_NEW]
+        out = b.order_by_template(cols)
+        self.assertEqual(len(out), len(cols))
+        self.assertEqual(out[out.index("IntegLLIN") + 1], "IntegHPV")                     # after the last column of its block
+        self.assertEqual(out[out.index("WastRYF") + 1], "ZeroDoseHPV")
+        self.assertEqual(out[out.index("WastRLLIN") + 1: out.index("WastRLLIN") + 3], ["Total_IPV<=1Y", "Total_IPV>1Y"])
+        self.assertEqual(out[-1], "geo_code")
+        self.assertEqual(out[0], "Country")
+
+    def test_ensure_template_columns_adds_only_what_is_missing(self):
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["Country", "IntegHPV"])
+        header, ncol, added = b.ensure_template_columns(ws, ["Country", "IntegHPV"])
+        self.assertNotIn("IntegHPV", added)
+        self.assertEqual(ncol, len(header))
+        self.assertEqual(ws.cell(row=1, column=ncol).value, header[-1])
+        self.assertEqual(len(added), len(b.TEMPLATE_V2_NEW) - 1)
+        self.assertEqual(b.ensure_template_columns(ws, header)[2], [])                   # a second time: nothing
+
+    def test_every_v2_column_is_in_the_dictionary(self):
+        for c in b.TEMPLATE_V2_NEW:
+            self.assertIn(c, b.COLUMNS)
+
+
 if __name__ == "__main__":
     unittest.main()
