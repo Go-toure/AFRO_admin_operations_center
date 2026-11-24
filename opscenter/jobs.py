@@ -104,23 +104,36 @@ class JobManager:
                     from . import status as _status
                     _status.write(ws, last_job={"title": job.title, "status": status, "message": message,
                                                 "at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
-                    sent = ws.push_changes(job.emit)
+                    def _step(label, fn):
+                        """one clean-up step; a network blip gets a second try, and a step that still fails is reported by name without stopping the next ones"""
+                        for attempt in (1, 2):
+                            try:
+                                return fn()
+                            except Exception as e:
+                                if attempt == 1 and "ConnectionError" in type(e).__name__ + str(e):
+                                    time.sleep(5)
+                                    continue
+                                job.emit("WARNING: not done: %s (%s: %s)" % (label, type(e).__name__, e))
+                                return None
+                    sent = _step("saving the files to SharePoint", lambda: ws.push_changes(job.emit))
                     if sent:
                         job.emit("%d file(s) saved to the SharePoint folder." % len(sent))
-                    ws.prune_feedback(job.emit)
-                    ws.prune_backups(config.KEEP_BACKUPS, job.emit)
-                    ws.prune_dir("dictionary_backups", config.KEEP_DICT_COPIES, job.emit, "AFRO_admin_data_dictionary_")
-                    ws.prune_runs(config.KEEP_RUNS, job.emit)
-                    ws.prune_by_age("inspect", config.KEEP_RESULTS, job.emit)
-                    ws.prune_by_age("compare", config.KEEP_RESULTS, job.emit)
-                    ws.sweep_versions(job.emit, force=getattr(job, "force_sweep", False))
-                    n_bin, info = store.empty_recycle_bin(t0)
-                    if n_bin:
-                        job.emit("Storage: recycle bin emptied of what this clean-up removed: %s." % info)
-                    elif n_bin is None:
-                        job.emit("Storage: the recycle bin was not emptied (%s). Removed versions and files stay in the site recycle bin "
-                                 "until it is emptied (Site contents > Recycle bin > Second-stage)." % info)
-                    ws.push_changes(job.emit)                  # the shortened catalog
+                    _step("clean-up of the country feedback files", lambda: ws.prune_feedback(job.emit))
+                    _step("clean-up of the old backups", lambda: ws.prune_backups(config.KEEP_BACKUPS, job.emit))
+                    _step("clean-up of the dictionary copies", lambda: ws.prune_dir("dictionary_backups", config.KEEP_DICT_COPIES, job.emit, "AFRO_admin_data_dictionary_"))
+                    _step("clean-up of the old runs", lambda: ws.prune_runs(config.KEEP_RUNS, job.emit))
+                    _step("clean-up of the old inspection results", lambda: ws.prune_by_age("inspect", config.KEEP_RESULTS, job.emit))
+                    _step("clean-up of the old comparison results", lambda: ws.prune_by_age("compare", config.KEEP_RESULTS, job.emit))
+                    _step("clean-up of the old versions", lambda: ws.sweep_versions(job.emit, force=getattr(job, "force_sweep", False)))
+                    res = _step("emptying the recycle bin", lambda: store.empty_recycle_bin(t0))
+                    if res:
+                        n_bin, info = res
+                        if n_bin:
+                            job.emit("Storage: recycle bin emptied of what this clean-up removed: %s." % info)
+                        elif n_bin is None:
+                            job.emit("Storage: the recycle bin was not emptied (%s). Removed versions and files stay in the site recycle bin "
+                                     "until it is emptied (Site contents > Recycle bin > Second-stage)." % info)
+                    _step("saving the shortened catalog", lambda: ws.push_changes(job.emit))
             except Exception as e:
                 job.emit("WARNING: could not save everything to SharePoint (%s: %s)" % (type(e).__name__, e))
             try:
