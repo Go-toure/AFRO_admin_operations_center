@@ -10,7 +10,7 @@ from pathlib import Path
 import pandas as pd
 from shiny import App, reactive, render, ui
 
-from opscenter import __version__, auth, config, explore, followup, guide, heldclose, livedata, overview, pipelines, provenance, scope_refresh, status, submissions_view, wiring_view
+from opscenter import __version__, accept_preview, auth, config, explore, followup, guide, heldclose, livedata, overview, pipelines, provenance, scope_refresh, status, submissions_view, wiring_view
 from opscenter.jobs import JobManager
 from opscenter.store import Store, StoreError
 from opscenter.workspace import Workspace
@@ -443,6 +443,29 @@ def server(input, output, session):
     @reactive.effect
     @reactive.event(input.s_accept)
     def _s_accept():
+        d = subs()
+        fid = input.s_file()
+        names, label = _sel_names(d, fid)
+        if not names:
+            decide("accept")           # shows the usual 'choose a file first' message
+            return
+        if not is_operator() or JM.busy():
+            decide("accept")           # shows the usual 'operators only' / 'a job is running' message
+            return
+        try:
+            p = accept_preview.preview(get_ws(), names)
+        except Exception:
+            p = None
+        ui.modal_show(ui.modal(
+            ui.p(ui.strong(label.split(": ", 1)[-1] if label else ", ".join(names))),
+            _preview_ui(p, compact=True),
+            title="Accept this file?", easy_close=True, size="l",
+            footer=ui.TagList(ui.modal_button("Cancel"), ui.input_action_button("s_accept_yes", "Yes, accept", class_="btn-who"))))
+
+    @reactive.effect
+    @reactive.event(input.s_accept_yes)
+    def _s_accept_yes():
+        ui.modal_remove()
         decide("accept")
 
     @reactive.effect
@@ -1400,6 +1423,7 @@ def server(input, output, session):
                             choices={**{"grp:" + g: "ALL VERSIONS - " + v["label"] for g, v in d.get("groups", {}).items()},
                                      **{r["id"]: "%s  (%s, %s)" % (r["File"], r["Status"], r["Decision"]) for r in d["rows"]}}, width="100%"),
             ui.output_ui("s_why"),
+            ui.output_ui("s_what"),
             ui.input_text("s_note", "Note (optional, kept in the ledger)", width="100%"),
             ui.input_action_button("s_accept", "Accept", class_="btn-who"),
             ui.input_action_button("s_reject", "Reject", class_="btn-outline-danger", style="margin-left:8px;"),
@@ -1623,6 +1647,83 @@ def server(input, output, session):
                 "Possible duplicates", "Also in another file", "Errors", "Warnings", "Left out", "Note"]
         rows = [{c: r[c] for c in cols} for r in (d or {}).get("rows", [])]
         return render.DataGrid(pd.DataFrame(rows, columns=cols), height="560px", width="100%", filters=True)
+
+    def _sel_names(d, fid):
+        """(file names, label) of the file or of every version of the file chosen in the Decide tab."""
+        if not d or not fid:
+            return [], ""
+        if str(fid).startswith("grp:"):
+            g = d.get("groups", {}).get(fid[4:])
+            if not g:
+                return [], ""
+            return sorted({r["_name"] for r in d["rows"] if r["id"] in g["ids"]}), g["label"]
+        row = next((r for r in d["rows"] if r["id"] == fid), None)
+        return ([row["_name"]], row["File"]) if row else ([], "")
+
+    def _preview_ui(p, compact=False):
+        """The plain statement of what accepting does: what is added, what is not, what else changes, what is still open."""
+        if p is None:
+            return ui.div(ui.strong("No report to read yet: "), "run the inspection first, then the numbers of this file appear here.",
+                          class_="note", style="margin:0 0 12px;")
+        n = p["add"]
+        if n:
+            head = ui.div(ui.strong("If you accept: %s new record(s) are added to the live file" % format(n, ",")),
+                          " (%s)." % ", ".join(p.get("countries", [])), style="font-size:1.05em;margin:0 0 6px;")
+        else:
+            head = ui.div(ui.strong("If you accept: nothing is added to the live file."), " This file has no new record that can be added.",
+                          style="font-size:1.05em;margin:0 0 6px;color:#9a3412;")
+        parts = [head]
+        if p["campaigns"]:
+            hdr = ["Country", "Campaign", "Round", "Vaccine", "Dates", "Records", "Districts"]
+            rows = p["campaigns"][:12 if compact else 40]
+            parts.append(ui.tags.table(
+                ui.tags.thead(ui.tags.tr(*[ui.tags.th(h) for h in hdr])),
+                ui.tags.tbody(*[ui.tags.tr(*[ui.tags.td(str(r[h])) for h in hdr]) for r in rows]),
+                class_="table table-sm", style="font-size:.85em;margin:0 0 6px;"))
+            if len(p["campaigns"]) > len(rows):
+                parts.append(ui.p("... and %d more campaign round(s): see the report." % (len(p["campaigns"]) - len(rows)), class_="note"))
+        no = []
+        ig = p.get("ignored", {})
+        if ig.get("same figures"):
+            no.append("%s record(s) are already in the live file with the same figures: nothing changes." % format(ig["same figures"], ","))
+        if ig.get("other figures"):
+            no.append("%s record(s) are already in the live file with other figures: the live figures stay, the figures of this file are NOT used." % format(ig["other figures"], ","))
+        if ig.get("possible duplicate"):
+            no.append("%s record(s) look like a record already in the live file under another campaign name, round or date: not added." % format(ig["possible duplicate"], ","))
+        if ig.get("several live records"):
+            no.append("%s record(s) match several live records, none identical: not added." % format(ig["several live records"], ","))
+        for h in p.get("held", []):
+            no.append("%s record(s) held back: %s." % (format(h["Records"], ","), h["Reason"][0].lower() + h["Reason"][1:]))
+        if no:
+            parts += [ui.strong("Not added:"), ui.tags.ul(*[ui.tags.li(t) for t in no], style="margin:2px 0 8px;")]
+        more = []
+        ing = p.get("integrated")
+        if ing:
+            more.append("%s empty cell(s) of %s live record(s) are completed from this file (%s). No figure already in the live file is replaced." % (
+                format(ing["cells"], ","), format(ing["records"], ","), ", ".join(ing["antigens"])))
+        if p.get("interventions"):
+            more.append("Other interventions found in the figures of this file: %s." % ", ".join("%s (%d records)" % (i["Intervention"], i["Records"]) for i in p["interventions"]))
+        if more:
+            parts += [ui.strong("Also:"), ui.tags.ul(*[ui.tags.li(t) for t in more], style="margin:2px 0 8px;")]
+        if p.get("open_questions"):
+            parts += [ui.strong("Still to look at:"), ui.tags.ul(*[ui.tags.li("%s: %s" % (q["Question"], q["Detail"])) for q in p["open_questions"][:6]], style="margin:2px 0 8px;")]
+        parts.append(ui.p("Nothing is written until the next Build; the Build adds exactly this. Reject changes nothing.", class_="note"))
+        return ui.div(*parts, style="border:1px solid #d1d5db;border-radius:6px;padding:10px 12px;margin:0 0 12px;background:#f9fafb;")
+
+    @render.ui
+    def s_what():
+        d = subs()
+        try:
+            fid = input.s_file()
+        except Exception:
+            fid = None
+        names, _ = _sel_names(d, fid)
+        if not names:
+            return ui.div()
+        try:
+            return _preview_ui(accept_preview.preview(get_ws(), names))
+        except Exception as e:
+            return ui.div(ui.strong("The numbers of this file could not be read from the report: "), str(e), class_="note", style="margin:0 0 12px;")
 
     @render.ui
     def s_why():
