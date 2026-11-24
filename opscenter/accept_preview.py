@@ -143,7 +143,7 @@ def preview(ws, names):
     if len(O) and "File" in O.columns:
         for _, r in O[O["File"].isin(names) | O["Also_in_earlier_file"].isin(names)].iterrows():
             ov.append({"File": str(r["File"]), "Earlier": str(r["Also_in_earlier_file"]), "Both": int(r["New_records_in_both"]),
-                       "Same": int(r["Same_figures"]), "Other": int(r["Other_figures"])})
+                       "Same": int(r["Same_figures"]), "Other": int(r["Other_figures"]), "Kept": str(r.get("Copy_kept_from", "") or "")})
 
     n_same, n_other = ign.get("same figures", 0), ign.get("other figures", 0)
     n_new_in_live = sum(c["Records"] for c in camps if c["In live"].startswith("yes"))
@@ -155,8 +155,12 @@ def preview(ws, names):
         a, b = o["Earlier"], o["File"]
         if a in names and b in names:
             t = "Two submissions of the same data: %d new records are in both \"%s\" and \"%s\"" % (o["Both"], a, b)
-            t += ("; %d have the same figures and %d have different figures in the two files. Only the first accepted file's copy is added, so accept the version with the right figures and reject the other." % (o["Same"], o["Other"])) if o["Other"] else \
-                 ("; the figures are the same, so they are added once.")
+            if o["Other"]:
+                t += "; %d have the same figures and %d have different figures in the two files. " % (o["Same"], o["Other"])
+                t += ("The more recent file, \"%s\", is used: its figures are the ones added." % o["Kept"]) if o["Kept"] else \
+                     "Only one copy is added."
+            else:
+                t += "; the figures are the same, so they are added once."
             sit.append(t)
         elif o["Both"] > 2:
             sit.append("%d new records are also in the file \"%s\" (another submission): they are added once, by the file accepted first." % (o["Both"], b if a in names else a))
@@ -184,8 +188,6 @@ def preview(ws, names):
         sug = ("Reject", "accepting adds nothing: there is no new record in this file.")
     elif not len(added):
         sug = ("Accept", "no new record, but it completes %s empty integrated cell(s) of live records." % format(integ["cells"], ","))
-    elif any(o["Other"] for o in ov if o["Earlier"] in names and o["File"] in names):
-        sug = ("Look first", "the two versions differ on some figures: accept only the version with the right figures.")
     elif warn:
         sug = ("Look first", warn[0]["Question"] + " (see below).")
     elif held_rows and not len(added):
