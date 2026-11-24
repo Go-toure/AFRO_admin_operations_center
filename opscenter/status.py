@@ -8,7 +8,7 @@ import datetime as dt
 import json
 
 from . import __version__
-from . import followup, submissions_view
+from . import accept_preview, followup, submissions_view
 from .pipelines import catalog, local_runs, run_state
 
 # where each action is done (the names of the tabs of the app)
@@ -21,6 +21,46 @@ def _read_json(path, default):
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return default
+
+
+def waiting_files(ws, subs, limit=40):
+    """The files that wait for a person, one entry per distinct file (all the versions of a file together), each with what it is, what accepting adds,
+    what it leaves out and the suggested decision: the same statement as the Decide tab, in plain data."""
+    groups = {}
+    for r in subs.get("rows", []):
+        if r.get("Decision") in ("waiting", "changed since inspected") and r.get("Status") not in ("blocked", "nothing new"):
+            groups.setdefault(r.get("Group") or r["id"], []).append(r)
+    out = []
+    for rs in list(groups.values())[:limit]:
+        item = {"file": rs[0]["File"], "country": rs[0].get("Country", ""), "versions": len(rs), "decide_in": GO["subs"] + " > Decide"}
+        try:
+            p = accept_preview.preview(ws, sorted({r["_name"] for r in rs}))
+        except Exception:
+            p = None
+        if p:
+            item.update({
+                "new_records_added_if_accepted": p["add"],
+                "campaign_rounds_added_to": [{"campaign": c["Campaign"], "round": c["Round"], "records": c["Records"], "already_in_live": c["In live"]} for c in p["campaigns"][:15]],
+                "what_it_is": p["situation"],
+                "not_added": p["ignored"],
+                "held_back": {h["Reason"]: h["Records"] for h in p["held"]},
+                "integrated_cells_completed": p["integrated"]["cells"] if p["integrated"] else 0,
+                "still_to_look_at": ["%s: %s" % (q["Question"], q["Detail"]) for q in p["open_questions"][:6]],
+                "suggested_decision": p["suggest"][0], "suggested_because": p["suggest"][1]})
+        out.append(item)
+    return out
+
+
+NOTES_FOR_A_READER = {
+    "suggested_decision": "Accept: the new records are clean and the campaigns are known (or the file only completes integrated cells). Reject: the file adds nothing "
+                          "(every record is already in the live file) or everything new is held back. Look first: a finding needs a person (a vaccine that differs from the "
+                          "lookup, a date far from the round, an older campaign in a file of a country that does not usually send them).",
+    "two_submissions_of_the_same_data": "When two files carry the same record with different figures the build adds the copy of the more recent file (version number in the "
+                                        "name, then the modification time, then the day first seen): accepting both is safe, the more recent figures are the ones added.",
+    "records_already_in_the_live_file": "Never changed by a submission. A country that sends other figures for a record already in the live file needs a correction made in the live file, not an accept.",
+    "older_rounds": "The DRC sends older rounds together with the new records: the older-campaign warning is not raised for it.",
+    "decisions": "Accept and reject are made in the Operations Center (Cycle > Submissions > Decide), by a person. An agent reads this file and advises; it does not decide.",
+}
 
 
 def snapshot(ws, subs=None, live=None, lock=None, last_job=None):
@@ -55,6 +95,10 @@ def snapshot(ws, subs=None, live=None, lock=None, last_job=None):
             "admin_files_that_cannot_be_read": subs.get("blocked_admin"),
             "files_already_in_the_live_file": subs.get("nothing_new"),
             "pending_rounds_nothing_received": pend[0] if pend else None, "pending_rounds_to_check": pend[1] if pend else None})
+        try:
+            sub["files_waiting_for_a_decision"] = waiting_files(ws, subs)
+        except Exception:
+            sub["files_waiting_for_a_decision"] = []
     fu = {}
     try:
         for r in followup.table(ws):
@@ -72,6 +116,7 @@ def snapshot(ws, subs=None, live=None, lock=None, last_job=None):
                           "rows": newest.get("rows")} if newest else None,
         "build_waiting_to_be_published": waiting,
         "submissions": sub,
+        "notes_for_a_reader": NOTES_FOR_A_READER,
         "last_job": last_job,
         "lock": lock,
     }
@@ -106,7 +151,13 @@ def next_actions(snap):
             add("do", "%d clean new record(s) from files taken by the rules are waiting for the next build." % sub["clean_new_records_waiting_for_a_build"], "cycle")
         if sub.get("waiting_files"):
             n, d = sub["waiting_files"], sub.get("waiting_distinct_files") or sub["waiting_files"]
-            add("look", "%d file(s) (%d distinct) wait for a person to accept or reject them. One decision covers all the versions of a file." % (n, d), "subs")
+            sg = {}
+            for f in sub.get("files_waiting_for_a_decision") or []:
+                k = f.get("suggested_decision")
+                if k:
+                    sg[k] = sg.get(k, 0) + 1
+            tail = (" Suggested: %s." % ", ".join("%d %s" % (v, k) for k, v in sorted(sg.items()))) if sg else ""
+            add("look", "%d file(s) (%d distinct) wait for a person to accept or reject them. One decision covers all the versions of a file.%s" % (n, d, tail), "subs")
         if sub.get("records_held_back"):
             top = sorted((sub.get("held_back_by_reason") or {}).items(), key=lambda kv: -kv[1])[:1]
             add("look", "%d record(s) are held back%s. See why and what each country has to correct." %
