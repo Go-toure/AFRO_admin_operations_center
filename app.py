@@ -1673,8 +1673,13 @@ def server(input, output, session):
             head = ui.div(ui.strong("If you accept: nothing is added to the live file."), " This file has no new record that can be added.",
                           style="font-size:1.05em;margin:0 0 6px;color:#9a3412;")
         parts = [head]
+        if p.get("situation"):
+            parts += [ui.strong("What this submission is:"), ui.tags.ul(*[ui.tags.li(t) for t in p["situation"]], style="margin:2px 0 8px;")]
+        if p.get("suggest"):
+            col = {"Accept": "#166534", "Reject": "#9a3412", "Look first": "#a16207"}.get(p["suggest"][0], "#374151")
+            parts.append(ui.div(ui.strong("Suggested: %s" % p["suggest"][0]), " - %s" % p["suggest"][1], style="margin:0 0 8px;color:%s;" % col))
         if p["campaigns"]:
-            hdr = ["Country", "Campaign", "Round", "Vaccine", "Dates", "Records", "Districts"]
+            hdr = ["Country", "Campaign", "Round", "Vaccine", "Dates", "Records", "Districts", "In live"]
             rows = p["campaigns"][:12 if compact else 40]
             parts.append(ui.tags.table(
                 ui.tags.thead(ui.tags.tr(*[ui.tags.th(h) for h in hdr])),

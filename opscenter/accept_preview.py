@@ -13,7 +13,7 @@ Rules the numbers follow (the same as the Build):
 """
 import pandas as pd
 
-SHEETS = ["Records", "Held_back_records", "Integrated_additions", "Integrated_interventions", "Decisions_needed"]
+SHEETS = ["Records", "Held_back_records", "Integrated_additions", "Integrated_interventions", "Decisions_needed", "Overlap_between_files"]
 _cache = {}
 
 
@@ -68,11 +68,13 @@ def preview(ws, names):
     R = R[R["File"].isin(names)].copy()
     out = {"files": sorted(names), "read": len(R)}
     if not len(R):
-        out.update(add=0, campaigns=[], held=[], ignored={}, integrated=None, interventions=[], open_questions=[])
+        out.update(add=0, campaigns=[], held=[], ignored={}, integrated=None, interventions=[], open_questions=[], situation=[], suggest=("Reject", "no record of this file was read in the report."))
         return out
     R["_k"] = _key(R)
     # the same record sent in several versions of the file counts once
+    rows_before = len(R)
     R = R.drop_duplicates(subset=["_k"], keep="first")
+    copies = round(rows_before / max(len(R), 1), 1)
     st = R["Status"].fillna("").astype(str)
     new = R[st == "new"]
 
@@ -98,10 +100,14 @@ def preview(ws, names):
         held_rows = [{"Reason": "Held back (see the report)", "Records": int(len(held))}]
 
     camps = []
+    present = R[st.str.startswith(("already in the live file", "possible duplicate", "same names as several"))]
+    there = present.groupby(["Response", "Round_Add"], dropna=False).size().to_dict() if len(present) else {}
     if len(added):
         for (c, resp, rnd), g in added.groupby(["Country", "Response", "Round_Add"], dropna=False):
+            e = int(there.get((resp, rnd), 0))
             camps.append({"Country": c, "Campaign": resp, "Round": rnd, "Vaccine": ", ".join(sorted(set(g["Vaccine_type"].dropna().astype(str)))),
-                          "Dates": _span(g["SIA_date"]), "Records": int(len(g)), "Districts": int(g[["Province", "District"]].drop_duplicates().shape[0])})
+                          "Dates": _span(g["SIA_date"]), "Records": int(len(g)), "Districts": int(g[["Province", "District"]].drop_duplicates().shape[0]),
+                          "In live": ("yes: completes it (%d records already there)" % e) if e else "no: new round"})
         camps.sort(key=lambda r: (str(r["Country"]), str(r["Campaign"]), str(r["Round"])))
 
     ign = {
@@ -132,6 +138,61 @@ def preview(ws, names):
         Dd = D[D["File"].isin(names)].drop_duplicates(["Question", "Proposed"])
         qs = [{"Question": str(r["Question"]), "Detail": str(r["Proposed"])} for _, r in Dd.iterrows()]
 
-    out.update(add=int(len(added)), campaigns=camps, held=held_rows, ignored=ign, integrated=integ, interventions=found, open_questions=qs,
+    O = x.get("Overlap_between_files", pd.DataFrame())
+    ov = []
+    if len(O) and "File" in O.columns:
+        for _, r in O[O["File"].isin(names) | O["Also_in_earlier_file"].isin(names)].iterrows():
+            ov.append({"File": str(r["File"]), "Earlier": str(r["Also_in_earlier_file"]), "Both": int(r["New_records_in_both"]),
+                       "Same": int(r["Same_figures"]), "Other": int(r["Other_figures"])})
+
+    n_same, n_other = ign.get("same figures", 0), ign.get("other figures", 0)
+    n_new_in_live = sum(c["Records"] for c in camps if c["In live"].startswith("yes"))
+    n_new_round = sum(c["Records"] for c in camps if c["In live"].startswith("no"))
+    k_in_live = sum(1 for c in camps if c["In live"].startswith("yes"))
+    k_new_round = sum(1 for c in camps if c["In live"].startswith("no"))
+    sit = []
+    for o in ov:
+        a, b = o["Earlier"], o["File"]
+        if a in names and b in names:
+            t = "Two submissions of the same data: %d new records are in both \"%s\" and \"%s\"" % (o["Both"], a, b)
+            t += ("; %d have the same figures and %d have different figures in the two files. Only the first accepted file's copy is added, so accept the version with the right figures and reject the other." % (o["Same"], o["Other"])) if o["Other"] else \
+                 ("; the figures are the same, so they are added once.")
+            sit.append(t)
+        elif o["Both"] > 2:
+            sit.append("%d new records are also in the file \"%s\" (another submission): they are added once, by the file accepted first." % (o["Both"], b if a in names else a))
+    if copies >= 1.5 and not any(o["Earlier"] in names and o["File"] in names for o in ov):
+        sit.append("This file was sent %d times (same records in every copy): they are counted once." % round(copies))
+    if not len(added) and (n_same or n_other):
+        sit.append("Nothing new: every record of this file is already in the live file.")
+    elif len(added) and (n_same + n_other) > 0:
+        sit.append("The file repeats earlier data and adds the missing part: %s record(s) are already in the live file, %s are new." % (format(n_same + n_other, ","), format(len(added), ",")))
+        if n_new_in_live:
+            sit.append("%s new record(s) complete %d campaign round(s) that the live file already has (districts or dates that were missing)." % (format(n_new_in_live, ","), k_in_live))
+        if n_new_round:
+            sit.append("%s new record(s) are of %d campaign round(s) that the live file does not have yet." % (format(n_new_round, ","), k_new_round))
+    elif len(added):
+        sit.append("All the records are new: %d campaign round(s) not in the live file yet." % k_new_round)
+    if n_other:
+        sit.append("%s record(s) of this file are in the live file with other figures. The live figures stay: if the country corrected its figures, that is a correction to make in the live file, not an accept." % format(n_other, ","))
+    if ign.get("possible duplicate"):
+        sit.append("%s record(s) look like records already in the live file under another campaign name, round or date: they are not added." % format(ign["possible duplicate"], ","))
+    if held_rows:
+        sit.append("%s record(s) are held back (see below)." % format(sum(h["Records"] for h in held_rows), ","))
+
+    warn = [q for q in qs if not q["Question"].startswith("Campaign details")]
+    if not len(added) and not integ:
+        sug = ("Reject", "accepting adds nothing: there is no new record in this file.")
+    elif not len(added):
+        sug = ("Accept", "no new record, but it completes %s empty integrated cell(s) of live records." % format(integ["cells"], ","))
+    elif any(o["Other"] for o in ov if o["Earlier"] in names and o["File"] in names):
+        sug = ("Look first", "the two versions differ on some figures: accept only the version with the right figures.")
+    elif warn:
+        sug = ("Look first", warn[0]["Question"] + " (see below).")
+    elif held_rows and not len(added):
+        sug = ("Reject", "everything new is held back.")
+    else:
+        sug = ("Accept", "the new records are clean and the campaigns are known.")
+
+    out.update(situation=sit, suggest=sug, add=int(len(added)), campaigns=camps, held=held_rows, ignored=ign, integrated=integ, interventions=found, open_questions=qs,
                countries=sorted(set(R["Country"].dropna().astype(str))))
     return out
