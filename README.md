@@ -72,7 +72,7 @@ or two servers). Operators can build and publish; viewers can only look and down
   within 14 days and no record of the same place already carries it (Year and SIAMTH follow), and the round with the lookup's number for that campaign and start date (Angola's file says
   Round Number 3 for the lookup's Round 1: it is Rnd1; the 23 Oct round is Rnd2). The inspection reads the live file this way and the files of the countries too; the build changes the live
   records (names, dates, rounds only, no figure) and lists every change in `aligned_to_lookup.csv`; what it left (a date too far from any planned start, a move that would make
-  duplicates, a round that would sit on two dates) is in `not_aligned_to_lookup.csv`. Records whose campaign is not in the lookup are not touched. Switch off with `--no-lookup-rounds`.
+  duplicates, a round that would sit on two dates) is in `not_aligned_to_lookup.csv`. The lookup itself writes its round number like the admin data (Rnd1, Rnd2 ...; an older lookup with 'Round 1' is read as Rnd1). Records whose campaign is not in the lookup are not touched. Switch off with `--no-lookup-rounds`.
 * **Integrated campaigns (1.7.4).** A polio-led SIA can carry other interventions (measles-rubella, yellow fever, vitamin A, deworming, IPV, HPV and the others of the
   template). The inspection recognises them from the **figures** of their blocks (children vaccinated / treated / doses delivered or used above zero), not from the flags, which
   the countries often leave wrong: the flags follow the figures and `SIA_Integrated` becomes Yes (sheet `Integrated_interventions`). A campaign already in the live file with its

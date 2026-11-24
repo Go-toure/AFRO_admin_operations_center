@@ -1,5 +1,6 @@
 """The lookup is the authority for the Response name, the start date and the round number (author: Gorgui Ba Toure)."""
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,7 +16,7 @@ RESP = "ANG-2026-08-02_nOPV_NID"
 
 def lookup():
     L = pd.DataFrame({"OBR Name": ["ANG-2026-08-02_nOPV_NID", "ANG-2026-08-02_nOPV_NID", "XXX-2026-01_bOPV", "XXX-2026-01_bOPV"],
-                      "Round Number": ["Round 1", "Round 2", "Round 1", "Round 2"], "Country": ["ANGOLA"] * 4,
+                      "Round Number": ["Rnd1", "Rnd2", "Rnd1", "Rnd2"], "Country": ["ANGOLA"] * 4,
                       "Round Start Date": ["2026-08-21", "2026-10-23", "2026-03-01", "2026-03-01"]})   # XXX: two numbers on one date = ambiguous
     L["_ck"] = L["Country"].map(b._lkc)
     L["_rk"] = L["OBR Name"].map(b._rk)
@@ -59,6 +60,16 @@ class RoundTests(unittest.TestCase):
         self.assertEqual([ws.cell(row=r, column=5).value for r in (2, 3)], [100, 200])
         self.assertEqual(int(log["Records"].sum()), 2)
         self.assertEqual(len(b.align_rounds_to_lookup(ws, header, lookup())[0]), 0)      # second run: nothing to do
+
+    def test_lookup_writes_the_round_like_the_admin_data(self):
+        self.assertEqual([b._rnd_text(x) for x in ("Round 1", "round 12", "Rnd3", " Round 0 ", "Other")], ["Rnd1", "Rnd12", "Rnd3", "Rnd0", "Other"])
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "lookup.xlsx"
+            pd.DataFrame({"Round Number": ["Round 1", "Round 2"], "OBR Name": ["X-2026-01_nOPV", "X-2026-01_nOPV"], "Country": ["ANGOLA"] * 2,
+                          "Round Start Date": ["2026-01-05", "2026-02-05"]}).to_excel(f, index=False)
+            L = b.load_lookup(str(f))
+        self.assertEqual(list(L["Round Number"]), ["Rnd1", "Rnd2"])
+        self.assertEqual(list(L["_rn"]), [1, 2])
 
     def test_response_follows_the_lookup_spelling(self):
         df = frame([["ANGOLA", "ANG-2026-08-02_nOPV-NID", "2026-08-21", "Rnd1"], ["ANGOLA", "ang-2026-08-02_nopv_nid.", "2026-10-23", "Rnd2"],
